@@ -19,17 +19,13 @@ def parse_options():
                       dest="stdin", default=False,
                       help="Read the password from stdin.")
     parser.add_option("-d", "--domain",
-                      dest="domain", default="default",
-                      help="The domain to use the password in (default: default)",
+                      dest="domain", default=None,
+                      help="The domain to use the password in (mandatory)",
                       metavar="DOMNAME")
     parser.add_option("-f", "--file",
                       dest="filename", default=None,
                       help="Set input file to FILE (default: Use system default, usually /etc/sssd/sssd.conf)",
                       metavar="FILE")
-    parser.add_option("-p", "--password",
-                      dest="password", default=None,
-                      help="Password to obfuscate.",
-                      metavar="PASSWORD")
     (options, args) = parser.parse_args()
 
     return options, args
@@ -40,7 +36,11 @@ def main():
         print >> sys.stderr, "Cannot parse options"
         return 1
 
-    if not options.stdin and not options.password:
+    if not options.domain:
+        print >> sys.stderr, "No domain specified"
+        return 1
+
+    if not options.stdin:
         pprompt = lambda: (getpass.getpass("Enter password: "), getpass.getpass("Re-enter password: "))
         p1, p2 = pprompt()
         while p1 != p2:
@@ -59,11 +59,15 @@ def main():
     obfpwd = obfobj.encrypt(password, obfobj.AES_256)
 
     # Save the obfuscated password into the domain
-    sssdconfig = SSSDConfig.SSSDConfig()
+    try:
+        sssdconfig = SSSDConfig.SSSDConfig()
+    except IOError:
+        print "Cannot read internal configuration files."
+        return 1
     try:
         sssdconfig.import_config(options.filename)
     except IOError:
-        print "Cannot open config file %s" % options.filename
+        print "Permissions error reading config file"
         return 1
 
     try:
@@ -82,7 +86,15 @@ def main():
 
 
     sssdconfig.save_domain(domain)
-    sssdconfig.write()
+    try:
+        sssdconfig.write()
+    except IOError:
+        # File could not be written
+        print >> sys.stderr, "Could not write to config file. Check that " \
+                             "you have the appropriate permissions to edit " \
+                             "this file."
+        return 1
+
     return 0
 
 if __name__ == "__main__":
