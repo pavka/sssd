@@ -36,6 +36,9 @@ pubconfpath = @pubconfpath@
 pkgconfigdir = $(libdir)/pkgconfig
 krb5rcachedir = @krb5rcachedir@
 
+suidperms = 4755
+suidbins = sss_chsh
+
 AM_CFLAGS =
 if WANT_AUX_INFO
     AM_CFLAGS += -aux-info $@.X
@@ -49,6 +52,9 @@ endif
 dist_pkgconfig_DATA =
 
 ACLOCAL_AMFLAGS = -I m4 -I .
+
+bin_PROGRAMS = \
+    sss_chsh	# schsh?
 
 sbin_PROGRAMS = \
     sssd \
@@ -448,6 +454,7 @@ dist_noinst_DATA += \
     src/examples/sssdproxytest \
     src/examples/sudo \
     src/examples/logrotate \
+    src/examples/pam.sss_chsh \
     src/providers/sssd_be.exports \
     src/sss_client/COPYING \
     src/sss_client/COPYING.LESSER \
@@ -456,6 +463,14 @@ dist_noinst_DATA += \
 ######################
 # Command-line Tools #
 ######################
+sss_chsh_SOURCES = \
+    src/tools/sss_chsh.c \
+    $(SSSD_UTIL_OBJ) \
+    $(SSSD_TOOLS_OBJ)
+sss_chsh_LDADD = \
+    $(TOOLS_LIBS)
+sss_chsh_LDFLAGS = -lpam -lpam_misc
+
 sss_useradd_SOURCES = \
     src/tools/sss_useradd.c \
     $(SSSD_TOOLS_OBJ)
@@ -1146,6 +1161,10 @@ if HAVE_SYSTEMD_UNIT
 else
 	mkdir -p $(DESTDIR)$(initdir)
 endif
+	for i in $(suidbins); do \
+	    chmod -f $(suidperms) $(DESTDIR)$(bindir)/$$i; \
+	done
+
 
 install-data-hook:
 	rm $(DESTDIR)/$(nsslibdir)/libnss_sss.so.2 \

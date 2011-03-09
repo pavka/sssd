@@ -36,6 +36,7 @@ Requires: sssd-client%{?_isa} = %{version}-%{release}
 Requires: libipa_hbac = %{version}-%{release}
 Requires: cyrus-sasl-gssapi
 Requires: keyutils-libs
+Requires: /etc/pam.d/system-auth
 Requires(post): initscripts chkconfig /sbin/ldconfig
 Requires(preun):  initscripts chkconfig
 Requires(postun): initscripts chkconfig /sbin/ldconfig
@@ -210,6 +211,10 @@ touch $RPM_BUILD_ROOT/%{_sysconfdir}/sssd/sssd.conf
 install -m444 src/config/etc/sssd.api.conf $RPM_BUILD_ROOT%{_sysconfdir}/sssd/sssd.api.conf
 install -m444 src/config/etc/sssd.api.d/* $RPM_BUILD_ROOT%{_sysconfdir}/sssd/sssd.api.d/
 
+# Copy pam_sss PAM configuration
+mkdir -p $RPM_BUILD_ROOT/%{_sysconfdir}/pam.d
+install -m644 src/examples/pam.sss_chsh $RPM_BUILD_ROOT%{_sysconfdir}/pam.d/sss_chsh
+
 # Copy default logrotate file
 mkdir -p $RPM_BUILD_ROOT/%{_sysconfdir}/logrotate.d
 install -m644 src/examples/logrotate $RPM_BUILD_ROOT%{_sysconfdir}/logrotate.d/sssd
@@ -283,6 +288,8 @@ rm -rf $RPM_BUILD_ROOT
 %files client
 %defattr(-,root,root,-)
 %doc src/sss_client/COPYING src/sss_client/COPYING.LESSER
+%config(noreplace) %{_sysconfdir}/pam.d/sss_chsh
+%{_bindir}/sss_chsh
 /%{_lib}/libnss_sss.so.2
 /%{_lib}/security/pam_sss.so
 %{_libdir}/krb5/plugins/libkrb5/sssd_krb5_locator_plugin.so

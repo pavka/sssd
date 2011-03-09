@@ -101,6 +101,8 @@
 #define SYSDB_USN "entryUSN"
 #define SYSDB_HIGH_USN "highestUSN"
 
+#define SYSDB_SHELL_OVERRIDE "loginShellOverride"
+
 #define SYSDB_NEXTID_FILTER "("SYSDB_NEXTID"=*)"
 
 #define SYSDB_UC "objectclass="SYSDB_USER_CLASS
@@ -137,6 +139,7 @@
 #define SYSDB_PW_ATTRS {SYSDB_NAME, SYSDB_UIDNUM, \
                         SYSDB_GIDNUM, SYSDB_GECOS, \
                         SYSDB_HOMEDIR, SYSDB_SHELL, \
+                        SYSDB_SHELL_OVERRIDE, \
                         SYSDB_DEFAULT_ATTRS, \
                         NULL}
 #define SYSDB_GRSRC_ATTRS {SYSDB_NAME, SYSDB_GIDNUM, \
