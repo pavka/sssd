@@ -40,7 +40,7 @@ static int sdap_save_user(TALLOC_CTX *memctx,
 {
     struct ldb_message_element *el;
     int ret;
-    const char *name;
+    const char *name = NULL;
     const char *pwd;
     const char *gecos;
     const char *homedir;
@@ -49,25 +49,35 @@ static int sdap_save_user(TALLOC_CTX *memctx,
     gid_t gid;
     struct sysdb_attrs *user_attrs;
     char *upn = NULL;
-    int i;
+    size_t i;
     char *val = NULL;
     int cache_timeout;
     char *usn_value = NULL;
     size_t c;
     char **missing = NULL;
+    TALLOC_CTX *tmpctx = NULL;
 
     DEBUG(9, ("Save user\n"));
 
-    ret = sysdb_attrs_get_el(attrs,
-                             opts->user_map[SDAP_AT_USER_NAME].sys_name, &el);
-    if (el->num_values == 0) {
-        ret = EINVAL;
+    tmpctx = talloc_new(memctx);
+    if (!tmpctx) {
+        ret = ENOMEM;
+        goto fail;
     }
-    if (ret) {
+
+    user_attrs = sysdb_new_attrs(tmpctx);
+    if (user_attrs == NULL) {
+        ret = ENOMEM;
+        goto fail;
+    }
+
+    ret = sysdb_attrs_primary_name(ctx, attrs,
+                                   opts->user_map[SDAP_AT_USER_NAME].name,
+                                   &name);
+    if (ret != EOK) {
         DEBUG(1, ("Failed to save the user - entry has no name attribute\n"));
-        return ret;
+        goto fail;
     }
-    name = (const char *)el->values[0].data;
 
     ret = sysdb_attrs_get_el(attrs,
                              opts->user_map[SDAP_AT_USER_PWD].sys_name, &el);
@@ -126,12 +136,6 @@ static int sdap_save_user(TALLOC_CTX *memctx,
             DEBUG(2, ("User [%s] filtered out! (id out of range)\n",
                       name));
         ret = EINVAL;
-        goto fail;
-    }
-
-    user_attrs = sysdb_new_attrs(memctx);
-    if (user_attrs == NULL) {
-        ret = ENOMEM;
         goto fail;
     }
 
@@ -271,7 +275,7 @@ static int sdap_save_user(TALLOC_CTX *memctx,
     /* Make sure that any attributes we requested from LDAP that we
      * did not receive are also removed from the sysdb
      */
-    ret = list_missing_attrs(NULL, opts->user_map, SDAP_OPTS_USER,
+    ret = list_missing_attrs(user_attrs, opts->user_map, SDAP_OPTS_USER,
                              ldap_attrs, attrs, &missing);
     if (ret != EOK) {
         goto fail;
@@ -285,21 +289,23 @@ static int sdap_save_user(TALLOC_CTX *memctx,
 
     DEBUG(6, ("Storing info for user %s\n", name));
 
-    ret = sysdb_store_user(memctx, ctx, dom,
+    ret = sysdb_store_user(user_attrs, ctx, dom,
                            name, pwd, uid, gid, gecos, homedir, shell,
                            user_attrs, missing, cache_timeout);
     if (ret) goto fail;
-    talloc_zfree(missing);
 
     if (_usn_value) {
         *_usn_value = usn_value;
     }
 
+    talloc_steal(memctx, user_attrs);
+    talloc_free(tmpctx);
     return EOK;
 
 fail:
-    DEBUG(2, ("Failed to save user %s\n", name));
-    talloc_free(missing);
+    DEBUG(2, ("Failed to save user [%s]\n",
+              name ? name : "Unknown"));
+    talloc_free(tmpctx);
     return ret;
 }
 
@@ -663,15 +669,27 @@ static int sdap_save_group(TALLOC_CTX *memctx,
     gid_t gid;
     int ret;
     char *usn_value = NULL;
+    TALLOC_CTX *tmpctx = NULL;
 
-    ret = sysdb_attrs_get_el(attrs,
-                          opts->group_map[SDAP_AT_GROUP_NAME].sys_name, &el);
-    if (ret) goto fail;
-    if (el->num_values == 0) {
-        ret = EINVAL;
+    tmpctx = talloc_new(memctx);
+    if (!tmpctx) {
+        ret = ENOMEM;
         goto fail;
     }
-    name = (const char *)el->values[0].data;
+
+    group_attrs = sysdb_new_attrs(tmpctx);
+    if (group_attrs == NULL) {
+        ret = ENOMEM;
+        goto fail;
+    }
+
+    ret = sysdb_attrs_primary_name(ctx, attrs,
+                                   opts->group_map[SDAP_AT_GROUP_NAME].name,
+                                   &name);
+    if (ret != EOK) {
+        DEBUG(1, ("Failed to save the group - entry has no name attribute\n"));
+        goto fail;
+    }
 
     ret = sysdb_attrs_get_uint32_t(attrs,
                                    opts->group_map[SDAP_AT_GROUP_GID].sys_name,
@@ -691,12 +709,6 @@ static int sdap_save_group(TALLOC_CTX *memctx,
         goto fail;
     }
 
-    group_attrs = sysdb_new_attrs(memctx);
-    if (!group_attrs) {
-        ret = ENOMEM;
-        goto fail;
-    }
-
     ret = sysdb_attrs_get_el(attrs, SYSDB_ORIG_DN, &el);
     if (ret) {
         goto fail;
@@ -707,7 +719,7 @@ static int sdap_save_group(TALLOC_CTX *memctx,
         DEBUG(7, ("Adding original DN [%s] to attributes of [%s].\n",
                   el->values[0].data, name));
         ret = sysdb_attrs_add_string(group_attrs, SYSDB_ORIG_DN,
-                                     (const char *)el->values[0].data);
+                                     (const char *) el->values[0].data);
         if (ret) {
             goto fail;
         }
@@ -745,7 +757,7 @@ static int sdap_save_group(TALLOC_CTX *memctx,
         if (ret) {
             goto fail;
         }
-        usn_value = talloc_strdup(memctx, (const char*)el->values[0].data);
+        usn_value = talloc_strdup(tmpctx, (const char*)el->values[0].data);
         if (!usn_value) {
             ret = ENOMEM;
             goto fail;
@@ -786,20 +798,24 @@ static int sdap_save_group(TALLOC_CTX *memctx,
 
     DEBUG(6, ("Storing info for group %s\n", name));
 
-    ret = sysdb_store_group(memctx, ctx, dom,
+    ret = sysdb_store_group(group_attrs, ctx, dom,
                             name, gid, group_attrs,
                             dp_opt_get_int(opts->basic,
                                            SDAP_ENTRY_CACHE_TIMEOUT));
     if (ret) goto fail;
 
     if (_usn_value) {
-        *_usn_value = usn_value;
+        *_usn_value = talloc_steal(memctx, usn_value);
     }
 
+    talloc_steal(memctx, group_attrs);
+    talloc_free(tmpctx);
     return EOK;
 
 fail:
-    DEBUG(2, ("Failed to save user %s\n", name));
+    DEBUG(2, ("Failed to save group [%s]\n",
+              name ? name : "Unknown"));
+    talloc_free(tmpctx);
     return ret;
 }
 
@@ -820,9 +836,9 @@ static int sdap_save_grpmem(TALLOC_CTX *memctx,
     const char *name;
     int ret;
 
-    ret = sysdb_attrs_get_string(attrs,
-                                opts->group_map[SDAP_AT_GROUP_NAME].sys_name,
-                                &name);
+    ret = sysdb_attrs_primary_name(ctx, attrs,
+                                   opts->group_map[SDAP_AT_GROUP_NAME].name,
+                                   &name);
     if (ret != EOK) {
         goto fail;
     }
@@ -1842,6 +1858,7 @@ static void sdap_nested_done(struct tevent_req *subreq)
 
 /* ==Save-fake-group-list=====================================*/
 static errno_t sdap_add_incomplete_groups(struct sysdb_ctx *sysdb,
+                                          struct sdap_options *opts,
                                           struct sss_domain_info *dom,
                                           char **groupnames,
                                           struct sysdb_attrs **ldap_groups,
@@ -1905,10 +1922,10 @@ static errno_t sdap_add_incomplete_groups(struct sysdb_ctx *sysdb,
     for (i=0; missing[i]; i++) {
         /* The group is not in sysdb, need to add a fake entry */
         for (ai=0; ai < ldap_groups_count; ai++) {
-            ret = sysdb_attrs_get_string(ldap_groups[ai],
-                                         SYSDB_NAME,
-                                         &name);
-            if (ret) {
+            ret = sysdb_attrs_primary_name(sysdb, ldap_groups[ai],
+                                           opts->group_map[SDAP_AT_GROUP_NAME].name,
+                                           &name);
+            if (ret != EOK) {
                 DEBUG(1, ("The group has no name attribute\n"));
                 goto fail;
             }
@@ -2134,8 +2151,9 @@ static void sdap_initgr_rfc2307_process(struct tevent_req *subreq)
      * member of but that are not cached in sysdb
      */
     if (add_groups && add_groups[0]) {
-        ret = sdap_add_incomplete_groups(state->sysdb, state->dom,
-                                         add_groups, ldap_groups, count);
+        ret = sdap_add_incomplete_groups(state->sysdb, state->opts,
+                                         state->dom, add_groups,
+                                         ldap_groups, count);
         if (ret != EOK) {
             tevent_req_error(req, ret);
             return;
@@ -2214,7 +2232,9 @@ static struct tevent_req *sdap_initgr_nested_send(TALLOC_CTX *memctx,
     state->grp_attrs = grp_attrs;
     state->op = NULL;
 
-    ret = sysdb_attrs_get_string(user, SYSDB_NAME, &state->username);
+    ret = sysdb_attrs_primary_name(sysdb, user,
+                                   opts->user_map[SDAP_AT_USER_NAME].name,
+                                   &state->username);
     if (ret != EOK) {
         DEBUG(1, ("User entry had no username\n"));
         talloc_free(req);
@@ -2816,11 +2836,12 @@ static struct tevent_req *sdap_nested_group_process_send(
      */
     key.type = HASH_KEY_STRING;
 
-    ret = sysdb_attrs_get_string(
-            group,
-            opts->group_map[SDAP_AT_GROUP_NAME].sys_name,
-            &groupname);
-    if (ret != EOK) goto immediate;
+    ret = sysdb_attrs_primary_name(sysdb, group,
+                                   opts->group_map[SDAP_AT_GROUP_NAME].name,
+                                   &groupname);
+    if (ret != EOK) {
+        goto immediate;
+    }
 
     key.str = talloc_strdup(state, groupname);
     if (!key.str) {
@@ -3784,8 +3805,11 @@ static errno_t rfc2307bis_nested_groups_step(struct tevent_req *req)
         goto error;
     }
 
-    ret = sysdb_attrs_get_string(state->groups[state->group_iter],
-                                 SYSDB_NAME, &name);
+    ret = sysdb_attrs_primary_name(
+            state->sysdb,
+            state->groups[state->group_iter],
+            state->opts->group_map[SDAP_AT_GROUP_NAME].name,
+            &name);
     if (ret != EOK) {
         goto error;
     }
@@ -3824,7 +3848,8 @@ static errno_t rfc2307bis_nested_groups_step(struct tevent_req *req)
 
     DEBUG(6, ("Saving incomplete group [%s] to the sysdb\n",
               groupnamelist[0]));
-    ret = sdap_add_incomplete_groups(state->sysdb, state->dom, groupnamelist,
+    ret = sdap_add_incomplete_groups(state->sysdb, state->opts,
+                                     state->dom, groupnamelist,
                                      grouplist, 1);
     if (ret != EOK) {
         goto error;
@@ -4033,11 +4058,16 @@ static errno_t rfc2307bis_nested_groups_update_sysdb(
     }
     in_transaction = true;
 
-    ret = sysdb_attrs_get_string(state->groups[state->group_iter],
-                                 SYSDB_NAME, &name);
+    ret = sysdb_attrs_primary_name(
+            state->sysdb,
+            state->groups[state->group_iter],
+            state->opts->group_map[SDAP_AT_GROUP_NAME].name,
+            &name);
     if (ret != EOK) {
         goto error;
     }
+
+    DEBUG(6, ("Processing group [%s]\n", name));
 
     attrs = talloc_array(tmp_ctx, const char *, 2);
     if (!attrs) {
