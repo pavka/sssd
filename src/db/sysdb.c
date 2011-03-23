@@ -196,7 +196,7 @@ errno_t sysdb_get_rdn(struct sysdb_ctx *ctx, void *memctx,
         }
 
         *_name = talloc_strdup(memctx, attr_name);
-        if (!_name) {
+        if (!*_name) {
             ret = ENOMEM;
             goto done;
         }
@@ -205,14 +205,14 @@ errno_t sysdb_get_rdn(struct sysdb_ctx *ctx, void *memctx,
     val = ldb_dn_get_rdn_val(dn);
     if (val == NULL) {
         ret = EINVAL;
-        talloc_free(*_name);
+        if (_name) talloc_free(*_name);
         goto done;
     }
 
     *_val = talloc_strndup(memctx, (char *) val->data, val->length);
     if (!*_val) {
         ret = ENOMEM;
-        talloc_free(*_name);
+        if (_name) talloc_free(*_name);
         goto done;
     }
 
@@ -2081,7 +2081,9 @@ errno_t sysdb_attrs_primary_name(struct sysdb_ctx *sysdb,
         goto done;
     }
     if (orig_dn_el->num_values == 0) {
-        DEBUG(7, ("Original DN is not available.\n"));
+        DEBUG(1, ("Original DN is not available.\n"));
+        ret = EINVAL;
+        goto done;
     } else if (orig_dn_el->num_values == 1) {
         ret = sysdb_get_rdn(sysdb, tmpctx,
                             (const char *) orig_dn_el->values[0].data,
