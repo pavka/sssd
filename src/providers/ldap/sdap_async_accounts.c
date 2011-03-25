@@ -1231,10 +1231,15 @@ sdap_process_group_members_2307(struct sdap_process_group_state *state,
     char *member_name;
     char *strdn;
     int ret;
+    errno_t sret;
     int i;
 
     for (i=0; i < memberel->num_values; i++) {
         member_name = (char *)memberel->values[i].data;
+
+        /* We need to skip over zero-length usernames */
+        if (member_name[0] == '\0') continue;
+
         ret = sysdb_search_user_by_name(state, state->sysdb,
                                         state->dom, member_name,
                                         NULL, &msg);
@@ -1282,12 +1287,22 @@ sdap_process_group_members_2307(struct sdap_process_group_state *state,
             DEBUG(2, ("Cannot commit sysdb transaction\n"));
             goto done;
         }
+        in_transaction = false;
     }
 
     ret = EOK;
     memberel->values = talloc_steal(state->group, state->sysdb_dns->values);
     memberel->num_values = state->sysdb_dns->num_values;
+
 done:
+    if (in_transaction) {
+        /* If the transaction is still active here, we need to cancel it */
+        sret = sysdb_transaction_cancel(state->sysdb);
+        if (sret != EOK) {
+            DEBUG(0, ("Unable to cancel transaction! [%d][%s]\n",
+                      sret, strerror(sret)));
+        }
+    }
     return ret;
 }
 
@@ -1349,7 +1364,7 @@ static int
 sdap_process_missing_member_2307(struct sdap_process_group_state *state,
                                  char *username, bool *in_transaction)
 {
-    int ret;
+    int ret, sret;
     struct ldb_dn *dn;
     char* dn_string;
 
@@ -1400,7 +1415,13 @@ sdap_process_missing_member_2307(struct sdap_process_group_state *state,
     return EOK;
 fail:
     if (*in_transaction) {
-        sysdb_transaction_cancel(state->sysdb);
+        sret = sysdb_transaction_cancel(state->sysdb);
+        if (sret == EOK) {
+            *in_transaction = false;
+        } else {
+            DEBUG(0, ("Unable to cancel transaction! [%d][%s]\n",
+                       sret, strerror(sret)));
+        }
     }
     return ret;
 }
@@ -3317,7 +3338,7 @@ static errno_t sdap_nested_group_process_step(struct tevent_req *req)
             if (ret != EOK && ret != ENOENT) {
                 ret = EIO;
                 goto error;
-            } else if (ret == ENOENT || count == 9) {
+            } else if (ret == ENOENT || count == 0) {
                 if (ret == EOK) talloc_zfree(msgs);
 
                 /* It wasn't found in the groups either
