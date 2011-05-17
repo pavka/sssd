@@ -354,6 +354,87 @@
                         </para>
                     </listitem>
                 </varlistentry>
+                <varlistentry>
+                    <term>override_homedir (string)</term>
+                    <listitem>
+                        <para>
+                            Override the user's home directory. You
+                            can either provide an absolute value or a
+                            template. In the template, the following
+                            sequences are substituted:
+                            <variablelist>
+                                <varlistentry>
+                                    <term>%u</term>
+                                    <listitem><para>login name</para></listitem>
+                                </varlistentry>
+                                <varlistentry>
+                                    <term>%U</term>
+                                    <listitem><para>UID number</para></listitem>
+                                </varlistentry>
+                                <varlistentry>
+                                    <term>%d</term>
+                                    <listitem><para>domain name</para></listitem>
+                                </varlistentry>
+                                <varlistentry>
+                                    <term>%f</term>
+                                    <listitem><para>fully qualified user name (user@domain)</para></listitem>
+                                </varlistentry>
+                                <varlistentry>
+                                    <term>%%</term>
+                                    <listitem><para>a literal '%'</para>
+                                    </listitem>
+                                </varlistentry>
+                            </variablelist>
+                        </para>
+                        <para>
+                            This option can also be set per-domain.
+                        </para>
+                    </listitem>
+                </varlistentry>
+                <varlistentry>
+                    <term>allowed_shells (string)</term>
+                    <listitem>
+                        <para>
+                            Restrict user shell to one of the listed values. The order of evaluation is:
+                        </para>
+                        <para>
+                            1. If the shell is present in
+                            <quote>/etc/shells</quote>, it is used.
+                        </para>
+                        <para>
+                            2. If the shell is in the allowed_shells list but
+                            not in <quote>/etc/shells</quote>, use the
+                            value of the shell_fallback parameter.
+                        </para>
+                        <para>
+                            3. If the shell is not in the allowed_shells list and
+                            not in <quote>/etc/shells</quote>, a nologin shell
+                            is used.
+                        </para>
+                        <para>
+                            An empty string for shell is passed as-is to libc.
+                        </para>
+                        <para>
+                            The <quote>/etc/shells</quote> is only read on SSSD start up, which means that
+                            a restart of the SSSD is required in case a new shell is installed.
+                        </para>
+                        <para>
+                            Default: Not set. The user shell is automatically used.
+                        </para>
+                    </listitem>
+                </varlistentry>
+                <varlistentry>
+                    <term>shell_fallback (string)</term>
+                    <listitem>
+                        <para>
+                            The default shell to use if an allowed shell is not
+                            installed on the machine.
+                        </para>
+                        <para>
+                            Default: /bin/sh
+                        </para>
+                    </listitem>
+                </varlistentry>
             </variablelist>
         </refsect2>
         <refsect2 id='PAM'>
@@ -804,6 +885,15 @@
                         </para>
                         <para>
                             Default: Use the domain part of machine's hostname
+                        </para>
+                    </listitem>
+                </varlistentry>
+
+                <varlistentry>
+                    <term>override_gid (integer)</term>
+                    <listitem>
+                        <para>
+                            Override the primary GID value with the one specified.
                         </para>
                     </listitem>
                 </varlistentry>

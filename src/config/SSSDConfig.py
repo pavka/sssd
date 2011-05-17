@@ -58,6 +58,9 @@ option_strings = {
     'filter_groups' : _('Groups that SSSD should explicitly ignore'),
     'filter_users_in_groups' : _('Should filtered users appear in groups'),
     'pwfield' : _('The value of the password field the NSS provider should return'),
+    'override_homedir' : _('Override homedir value from the identity provider with this value'),
+    'allowed_shells' : _('The list of shells users are allowed to log in with'),
+    'shell_fallback' : _('If a shell stored in central directory is allowed but not available, use this fallback'),
 
     # [pam]
     'offline_credentials_expiration' : _('How long to allow cached logins between online logins (days)'),
@@ -85,6 +88,7 @@ option_strings = {
     'account_cache_expiration' : _('How long to keep cached entries after last successful login (days)'),
     'dns_resolver_timeout' : _('How long to wait for replies from DNS when resolving servers (seconds)'),
     'dns_discovery_domain' : _('The domain part of service discovery DNS query'),
+    'override_gid' : _('Override GID value from the identity provider with this value'),
 
     # [provider/ipa]
     'ipa_domain' : _('IPA domain'),

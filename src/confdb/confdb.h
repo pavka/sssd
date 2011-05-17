@@ -41,6 +41,7 @@
 #define CONFDB_DEFAULT_CONFIG_FILE SSSD_CONF_DIR"/sssd.conf"
 #define SSSD_MIN_ID 1
 #define SSSD_LOCAL_MINID 1000
+#define CONFDB_DEFAULT_SHELL_FALLBACK "/bin/sh"
 
 
 /* Configuration options */
@@ -72,6 +73,9 @@
 #define CONFDB_NSS_FILTER_USERS "filter_users"
 #define CONFDB_NSS_FILTER_GROUPS "filter_groups"
 #define CONFDB_NSS_PWFIELD  "pwfield"
+#define CONFDB_NSS_OVERRIDE_HOMEDIR "override_homedir"
+#define CONFDB_NSS_ALLOWED_SHELL "allowed_shells"
+#define CONFDB_NSS_SHELL_FALLBACK "shell_fallback"
 
 /* PAM */
 #define CONFDB_PAM_CONF_ENTRY "config/pam"
@@ -109,6 +113,7 @@
 #define CONFDB_DOMAIN_DNS_DISCOVERY_NAME "dns_discovery_domain"
 #define CONFDB_DOMAIN_FAMILY_ORDER "lookup_family_order"
 #define CONFDB_DOMAIN_ACCOUNT_CACHE_EXPIRATION "account_cache_expiration"
+#define CONFDB_DOMAIN_OVERRIDE_GID "override_gid"
 
 /* Local Provider */
 #define CONFDB_LOCAL_DEFAULT_SHELL   "default_shell"
@@ -142,6 +147,9 @@ struct sss_domain_info {
 
     bool cache_credentials;
     bool legacy_passwords;
+
+    gid_t override_gid;
+    const char *override_homedir;
 
     uint32_t entry_cache_timeout;
 

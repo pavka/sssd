@@ -169,6 +169,178 @@ struct setent_ctx {
 /****************************************************************************
  * PASSWD db related functions
  ***************************************************************************/
+char *expand_homedir_template(TALLOC_CTX *mem_ctx, const char *template,
+                              const char *username, uint32_t uid,
+                              const char *domain)
+{
+    char *copy;
+    char *p;
+    char *n;
+    char *result = NULL;
+    char *res = NULL;
+    TALLOC_CTX *tmp_ctx = NULL;
+
+    if (template == NULL) {
+        DEBUG(1, ("Missing template.\n"));
+        return NULL;
+    }
+
+    tmp_ctx = talloc_new(NULL);
+    if (!tmp_ctx) return NULL;
+
+    copy = talloc_strdup(tmp_ctx, template);
+    if (copy == NULL) {
+        DEBUG(1, ("talloc_strdup failed.\n"));
+        goto done;
+    }
+
+    result = talloc_strdup(tmp_ctx, "");
+    if (result == NULL) {
+        DEBUG(1, ("talloc_strdup failed.\n"));
+        goto done;
+    }
+
+    p = copy;
+    while ( (n = strchr(p, '%')) != NULL) {
+        *n = '\0';
+        n++;
+        if ( *n == '\0' ) {
+            DEBUG(1, ("format error, single %% at the end of the template.\n"));
+            goto done;
+        }
+        switch( *n ) {
+            case 'u':
+                if (username == NULL) {
+                    DEBUG(1, ("Cannot expand user name template "
+                              "because user name is empty.\n"));
+                    goto done;
+                }
+                result = talloc_asprintf_append(result, "%s%s", p,
+                                                username);
+                break;
+
+            case 'U':
+                if (uid == 0) {
+                    DEBUG(1, ("Cannot expand uid template "
+                              "because uid is invalid.\n"));
+                    goto done;
+                }
+                result = talloc_asprintf_append(result, "%s%d", p,
+                                                uid);
+                break;
+
+            case 'd':
+                if (domain == NULL) {
+                    DEBUG(1, ("Cannot expand domain name template "
+                              "because domain name is empty.\n"));
+                    goto done;
+                }
+                result = talloc_asprintf_append(result, "%s%s", p,
+                                                domain);
+                break;
+
+            case 'f':
+                if (domain == NULL || username == NULL) {
+                    DEBUG(1, ("Cannot expand fully qualified name template "
+                              "because domain or user name is empty.\n"));
+                    goto done;
+                }
+                result = talloc_asprintf_append(result, "%s%s@%s", p,
+                                                username, domain);
+                break;
+
+            case '%':
+                result = talloc_asprintf_append(result, "%s%%", p);
+                break;
+
+            default:
+                DEBUG(1, ("format error, unknown template [%%%c].\n", *n));
+                goto done;
+        }
+
+        if (result == NULL) {
+            DEBUG(1, ("talloc_asprintf_append failed.\n"));
+            goto done;
+        }
+
+        p = n + 1;
+    }
+
+    result = talloc_asprintf_append(result, "%s", p);
+    if (result == NULL) {
+        DEBUG(1, ("talloc_asprintf_append failed.\n"));
+        goto done;
+    }
+
+    res = talloc_move(mem_ctx, &result);
+done:
+    talloc_zfree(tmp_ctx);
+    return res;
+}
+
+static gid_t get_gid_override(struct ldb_message *msg,
+                              struct sss_domain_info *dom)
+{
+    return dom->override_gid ?
+        dom->override_gid :
+        ldb_msg_find_attr_as_uint64(msg, SYSDB_GIDNUM, 0);
+}
+
+static const char *get_homedir_override(TALLOC_CTX *mem_ctx,
+                                        struct ldb_message *msg,
+                                        struct nss_ctx *nctx,
+                                        struct sss_domain_info *dom,
+                                        const char *name,
+                                        uint32_t uid)
+{
+    if (dom->override_homedir) {
+        return expand_homedir_template(mem_ctx, dom->override_homedir,
+                                       name, uid, dom->name);
+    } else if (nctx->override_homedir) {
+        return expand_homedir_template(mem_ctx, nctx->override_homedir,
+                                       name, uid, dom->name);
+    }
+
+    return talloc_strdup(mem_ctx,
+            ldb_msg_find_attr_as_string(msg, SYSDB_HOMEDIR, NULL));
+}
+
+static const char *get_shell_override(TALLOC_CTX *mem_ctx,
+                                      struct ldb_message *msg,
+                                      struct nss_ctx *nctx)
+{
+    const char *user_shell;
+    int i;
+
+    user_shell = ldb_msg_find_attr_as_string(msg, SYSDB_SHELL, NULL);
+    if (!user_shell) return NULL;
+    if (!nctx->allowed_shells) return talloc_strdup(mem_ctx, user_shell);
+
+    for (i=0; nctx->etc_shells[i]; i++) {
+        if (strcmp(user_shell, nctx->etc_shells[i]) == 0) {
+            DEBUG(9, ("Shell %s found in /etc/shells\n",
+                      nctx->etc_shells[i]));
+            break;
+        }
+    }
+
+    if (nctx->etc_shells[i]) {
+        DEBUG(9, ("Using original shell '%s'\n", user_shell));
+        return talloc_strdup(mem_ctx, user_shell);
+    }
+
+    for (i=0; nctx->allowed_shells[i]; i++) {
+        if (strcmp(nctx->allowed_shells[i], user_shell) == 0) {
+            DEBUG(5, ("The shell '%s' is allowed but does not exist. "
+                      "Using fallback\n", user_shell));
+            return talloc_strdup(mem_ctx, nctx->shell_fallback);
+        }
+    }
+
+    DEBUG(5, ("The shell '%s' is not allowed and does not exist.\n",
+              user_shell));
+    return talloc_strdup(mem_ctx, NOLOGIN_SHELL);
+}
 
 static int fill_pwent(struct sss_packet *packet,
                       struct sss_domain_info *dom,
@@ -195,6 +367,7 @@ static int fill_pwent(struct sss_packet *packet,
     const char *namefmt = nctx->rctx->names->fq_fmt;
     bool packet_initialized = false;
     int ncret;
+    TALLOC_CTX *tmp_ctx = NULL;
 
     if (add_domain) dom_len = strlen(domain);
 
@@ -202,11 +375,14 @@ static int fill_pwent(struct sss_packet *packet,
 
     num = 0;
     for (i = 0; i < *count; i++) {
+        talloc_zfree(tmp_ctx);
+        tmp_ctx = talloc_new(NULL);
+
         msg = msgs[i];
 
         name = ldb_msg_find_attr_as_string(msg, SYSDB_NAME, NULL);
         uid = ldb_msg_find_attr_as_uint64(msg, SYSDB_UIDNUM, 0);
-        gid = ldb_msg_find_attr_as_uint64(msg, SYSDB_GIDNUM, 0);
+        gid = get_gid_override(msg, dom);
 
         if (!name || !uid || !gid) {
             DEBUG(2, ("Incomplete or fake user object for %s[%llu]! Skipping\n",
@@ -233,8 +409,8 @@ static int fill_pwent(struct sss_packet *packet,
         }
 
         gecos = ldb_msg_find_attr_as_string(msg, SYSDB_GECOS, NULL);
-        homedir = ldb_msg_find_attr_as_string(msg, SYSDB_HOMEDIR, NULL);
-        shell = ldb_msg_find_attr_as_string(msg, SYSDB_SHELL, NULL);
+        homedir = get_homedir_override(tmp_ctx, msg, nctx, dom, name, uid);
+        shell = get_shell_override(tmp_ctx, msg, nctx);
 
         if (!gecos) gecos = "";
         if (!homedir) homedir = "/";
@@ -298,6 +474,7 @@ static int fill_pwent(struct sss_packet *packet,
 
         num++;
     }
+    talloc_zfree(tmp_ctx);
 
 done:
     *count = i;
