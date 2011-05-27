@@ -22,9 +22,13 @@
 #define __SSS_LDAP_H__
 
 #include <ldap.h>
+#include <talloc.h>
 
 int sss_ldap_control_create(const char *oid, int iscritical,
                             struct berval *value, int dupval,
                             LDAPControl **ctrlp);
+
+inline const char *
+sss_ldap_escape_ip_address(TALLOC_CTX *mem_ctx, int family, const char *addr);
 
 #endif /* __SSS_LDAP_H__ */
