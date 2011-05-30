@@ -92,7 +92,8 @@ check_PROGRAMS = \
 PYTHON_TESTS =
 
 if BUILD_PYTHON_BINDINGS
-PYTHON_TESTS += $(srcdir)/src/config/SSSDConfigTest.py
+PYTHON_TESTS += $(srcdir)/src/config/SSSDConfigTest.py \
+                $(srcdir)/src/tests/pyhbac-test.py
 endif
 
 TESTS = \
@@ -140,7 +141,8 @@ libsss_crypt_la_LIBADD = \
 
 if BUILD_PYTHON_BINDINGS
 pyexec_LTLIBRARIES = \
-    pysss.la
+    pysss.la \
+    pyhbac.la
 endif
 
 dist_noinst_SCRIPTS = \
@@ -149,7 +151,8 @@ dist_noinst_SCRIPTS = \
     src/config/ipachangeconf.py \
     src/config/SSSDConfig.py \
     src/config/SSSDConfigTest.py \
-    src/config/sssd_upgrade_config.py
+    src/config/sssd_upgrade_config.py \
+    src/tests/pyhbac-test.py
 
 dist_noinst_DATA = \
     src/config/testconfigs/sssd-valid.conf \
@@ -308,6 +311,7 @@ dist_noinst_HEADERS = \
     src/util/util.h \
     src/util/strtonum.h \
     src/util/sss_ldap.h \
+    src/util/sss_python.h \
     src/util/sss_krb5.h \
     src/util/refcount.h \
     src/util/find_uid.h \
@@ -987,6 +991,19 @@ pysss_la_LIBADD = \
     $(PYTHON_BINDINGS_LIBS) \
     $(PYTHON_LIBS)
 pysss_la_LDFLAGS = \
+    -avoid-version \
+    -module
+
+pyhbac_la_SOURCES = \
+    src/python/pyhbac.c \
+    src/util/sss_python.c
+pyhbac_la_CFLAGS = \
+    $(AM_CFLAGS)  \
+    $(PYTHON_CFLAGS)
+pyhbac_la_LIBADD = \
+    $(PYTHON_LIBS) \
+    libipa_hbac.la
+pyhbac_la_LDFLAGS = \
     -avoid-version \
     -module
 endif
