@@ -121,6 +121,7 @@ m4_include([src/external/nsupdate.m4])
 m4_include([src/external/libkeyutils.m4])
 m4_include([src/external/libnl.m4])
 m4_include([src/util/signal.m4])
+m4_include([src/external/libunistring.m4])
 
 PKG_CHECK_MODULES([DBUS],[dbus-1])
 dnl if test -n "`$PKG_CONFIG --modversion dbus-1 | grep '^0\.'`" ; then
@@ -187,6 +188,7 @@ AC_DEFINE_UNQUOTED([ABS_BUILD_DIR], ["$abs_build_dir"], [Absolute path to the bu
 AC_SUBST([abs_builddir], $abs_build_dir)
 
 AC_CONFIG_FILES([Makefile contrib/sssd.spec src/examples/rwtab src/doxy.config
-                 src/sysv/systemd/sssd.service po/Makefile.in src/man/Makefile])
+                 src/sysv/systemd/sssd.service po/Makefile.in src/man/Makefile
+                 src/providers/ipa/ipa_hbac.pc])
 AC_OUTPUT
 

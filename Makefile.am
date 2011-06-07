@@ -32,6 +32,7 @@ pipepath = @pipepath@
 initdir = @initdir@
 logpath = @logpath@
 pubconfpath = @pubconfpath@
+pkgconfigdir = $(libdir)/pkgconfig
 
 AM_CFLAGS =
 if WANT_AUX_INFO
@@ -42,6 +43,8 @@ if HAVE_GCC
                  -Wcast-qual -Wcast-align -Wwrite-strings \
                  -Werror-implicit-function-declaration
 endif
+
+dist_pkgconfig_DATA =
 
 ACLOCAL_AMFLAGS = -I m4 -I .
 
@@ -78,7 +81,8 @@ if HAVE_CHECK
         ipa_ldap_opt-tests \
         simple_access-tests \
         crypto-tests \
-        util-tests
+        util-tests \
+        ipa_hbac-tests
 endif
 
 check_PROGRAMS = \
@@ -357,6 +361,17 @@ if HAVE_NSS
     dist_noinst_HEADERS += src/util/crypto/nss/nss_util.h
 endif
 
+
+lib_LTLIBRARIES = libipa_hbac.la
+dist_pkgconfig_DATA += src/providers/ipa/ipa_hbac.pc
+libipa_hbac_la_SOURCES = \
+    src/providers/ipa/hbac_evaluator.c
+libipa_hbac_la_LDFLAGS = \
+    -version 1:0:1 \
+    -lunistring
+
+include_HEADERS = \
+    src/providers/ipa/ipa_hbac.h
 
 ####################
 # Program Binaries #
@@ -690,6 +705,18 @@ crypto_tests_LDADD = \
     $(CHECK_LIBS) \
     libsss_test_common.la
 
+ipa_hbac_tests_SOURCES = \
+    src/tests/ipa_hbac-tests.c \
+    $(SSSD_UTIL_OBJ)
+ipa_hbac_tests_CFLAGS = \
+    $(AM_CFLAGS) \
+    $(CHECK_CFLAGS)
+ipa_hbac_tests_LDADD = \
+    $(SSSD_LIBS) \
+    $(CHECK_LIBS) \
+    libsss_test_common.la \
+    libipa_hbac.la
+
 endif
 
 stress_tests_SOURCES = \
@@ -833,6 +860,12 @@ libsss_ipa_la_SOURCES = \
     src/providers/ipa/ipa_auth.c \
     src/providers/ipa/ipa_access.c \
     src/providers/ipa/ipa_dyndns.c \
+    src/providers/ipa/ipa_hbac_hosts.c \
+    src/providers/ipa/ipa_hbac_private.h \
+    src/providers/ipa/ipa_hbac_rules.c \
+    src/providers/ipa/ipa_hbac_services.c \
+    src/providers/ipa/ipa_hbac_users.c \
+    src/providers/ipa/ipa_hbac_common.c \
     src/providers/ldap/ldap_id.c \
     src/providers/ldap/ldap_id_enum.c \
     src/providers/ldap/ldap_id_cleanup.c \
@@ -870,7 +903,8 @@ libsss_ipa_la_LIBADD = \
     $(DHASH_LIBS) \
     $(KEYUTILS_LIBS) \
     $(KRB5_LIBS) \
-    libsss_crypt.la
+    libsss_crypt.la \
+    libipa_hbac.la
 libsss_ipa_la_LDFLAGS = \
     -version-info 1:0:0 \
     -module

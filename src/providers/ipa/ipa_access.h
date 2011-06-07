@@ -43,26 +43,37 @@ struct ipa_access_ctx {
     struct sdap_id_ctx *sdap_ctx;
     struct dp_option *ipa_options;
     struct time_rules_ctx *tr_ctx;
+    time_t last_update;
 };
 
 struct hbac_ctx {
     struct sdap_id_ctx *sdap_ctx;
+    struct ipa_access_ctx *access_ctx;
     struct sdap_id_op *sdap_op;
     struct dp_option *ipa_options;
     struct time_rules_ctx *tr_ctx;
     struct be_req *be_req;
     struct pam_data *pd;
-    struct sysdb_attrs **hbac_hosts_list;
-    size_t hbac_hosts_count;
-    struct hbac_host_info *remote_hhi;
-    struct sysdb_attrs **hbac_rule_list;
-    size_t hbac_rule_count;
-    const char *user_dn;
-    size_t groups_count;
-    const char **groups;
+
     char *hbac_search_base;
-    struct sysdb_attrs **hbac_services_list;
-    size_t hbac_services_count;
+
+    /* Hosts */
+    size_t host_count;
+    struct sysdb_attrs **hosts;
+    size_t hostgroup_count;
+    struct sysdb_attrs **hostgroups;
+    struct sysdb_attrs *ipa_host;
+
+    /* Rules */
+    bool get_deny_rules;
+    size_t rule_count;
+    struct sysdb_attrs **rules;
+
+    /* Services */
+    size_t service_count;
+    struct sysdb_attrs **services;
+    size_t servicegroup_count;
+    struct sysdb_attrs **servicegroups;
 };
 
 /* Get BE context associated with HBAC context */
