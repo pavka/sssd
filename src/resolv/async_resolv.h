@@ -37,6 +37,10 @@
 #include "resolv/ares/ares_data.h"
 #endif /* HAVE_ARES_DATA */
 
+#ifndef RESOLV_DEFAULT_TTL
+#define RESOLV_DEFAULT_TTL 7200
+#endif  /* RESOLV_DEFAULT_TTL */
+
 /*
  * An opaque structure which holds context for a module using the async
  * resolver. Is should be used as a "local-global" variable - in sssd,
@@ -53,10 +57,22 @@ void resolv_reread_configuration(void);
 
 const char *resolv_strerror(int ares_code);
 
-struct hostent *resolv_copy_hostent(TALLOC_CTX *mem_ctx,
-                                    struct hostent *src);
+struct resolv_hostent *
+resolv_copy_hostent(TALLOC_CTX *mem_ctx, struct hostent *src);
+
+struct resolv_hostent *
+resolv_copy_hostent_ares(TALLOC_CTX *mem_ctx, struct hostent *src,
+                         int family, void *ares_ttl_data,
+                         int num_ares_ttl_data);
 
 /** Get host by name **/
+enum host_database {
+    DB_FILES,
+    DB_DNS,
+
+    DB_SENTINEL
+};
+
 enum restrict_family {
     IPV4_ONLY,
     IPV4_FIRST,
@@ -64,20 +80,39 @@ enum restrict_family {
     IPV6_FIRST
 };
 
+/* If resolv_hostent->family is AF_INET, then ipaddr points to
+ * struct in_addr, else if family is AF_INET6, ipaddr points to
+ * struct in6_addr
+ */
+struct resolv_addr {
+    uint8_t *ipaddr;
+    int ttl;
+};
+
+struct resolv_hostent {
+    char  *name;            /* official name of host */
+    char **aliases;         /* alias list */
+    int    family;          /* host address type */
+
+    struct resolv_addr **addr_list; /* list of addresses */
+};
+
+/* The default database order */
+extern enum host_database default_host_dbs[];
+
 struct tevent_req *resolv_gethostbyname_send(TALLOC_CTX *mem_ctx,
                                             struct tevent_context *ev,
                                             struct resolv_ctx *ctx,
                                             const char *name,
-                                            enum restrict_family family_order);
+                                            enum restrict_family family_order,
+                                            enum host_database *db);
 
-int resolv_gethostbyname_recv(struct tevent_req *req,
-                              TALLOC_CTX *mem_ctx,
-                              int *status,
-                              int *timeouts,
-                              struct hostent **hostent);
+int resolv_gethostbyname_recv(struct tevent_req *req, TALLOC_CTX *mem_ctx,
+                              int *status, int *timeouts,
+                              struct resolv_hostent **rhostent);
 
 char *
-resolv_get_string_address(TALLOC_CTX *mem_ctx, struct hostent *hostent);
+resolv_get_string_address(TALLOC_CTX *mem_ctx, struct resolv_hostent *hostent);
 
 /** Get SRV record **/
 struct tevent_req *resolv_getsrv_send(TALLOC_CTX *mem_ctx,
