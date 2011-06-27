@@ -558,6 +558,7 @@ static void ipa_resolve_callback(void *private_data, struct fo_server *server)
     TALLOC_CTX *tmp_ctx = NULL;
     struct ipa_service *service;
     struct resolv_hostent *srvaddr;
+    struct sockaddr_storage *sockaddr;
     char *address;
     const char *safe_address;
     char *new_uri;
@@ -584,6 +585,13 @@ static void ipa_resolve_callback(void *private_data, struct fo_server *server)
         return;
     }
 
+    sockaddr = resolv_get_sockaddr_address(tmp_ctx, srvaddr, LDAP_PORT);
+    if (sockaddr == NULL) {
+        DEBUG(1, ("resolv_get_sockaddr_address failed.\n"));
+        talloc_free(tmp_ctx);
+        return;
+    }
+
     address = resolv_get_string_address(tmp_ctx, srvaddr);
     if (address == NULL) {
         DEBUG(1, ("resolv_get_string_address failed.\n"));
@@ -600,7 +608,7 @@ static void ipa_resolve_callback(void *private_data, struct fo_server *server)
         return;
     }
 
-    new_uri = talloc_asprintf(service, "ldap://%s", safe_address);
+    new_uri = talloc_asprintf(service, "ldap://%s", fo_get_server_name(server));
     if (!new_uri) {
         DEBUG(2, ("Failed to copy URI ...\n"));
         talloc_free(tmp_ctx);
@@ -611,6 +619,8 @@ static void ipa_resolve_callback(void *private_data, struct fo_server *server)
     /* free old one and replace with new one */
     talloc_zfree(service->sdap->uri);
     service->sdap->uri = new_uri;
+    talloc_zfree(service->sdap->sockaddr);
+    service->sdap->sockaddr = talloc_steal(service, sockaddr);
     talloc_zfree(service->krb5_service->address);
     service->krb5_service->address = talloc_steal(service, address);
 
