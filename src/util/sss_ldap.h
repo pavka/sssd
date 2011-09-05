@@ -28,6 +28,10 @@
 #include <tevent.h>
 #include "util/util.h"
 
+#define LDAP_X_SSSD_PASSWORD_EXPIRED 0x555D
+
+const char* sss_ldap_err2string(int err);
+
 int sss_ldap_control_create(const char *oid, int iscritical,
                             struct berval *value, int dupval,
                             LDAPControl **ctrlp);
