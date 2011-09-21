@@ -46,6 +46,7 @@
 #define SYSDB_NETGROUP_CLASS "netgroup"
 
 #define SYSDB_NAME "name"
+#define SYSDB_NAME_ALIAS "nameAlias"
 #define SYSDB_OBJECTCLASS "objectClass"
 
 #define SYSDB_NEXTID "nextID"
@@ -106,15 +107,15 @@
 #define SYSDB_NC "objectclass="SYSDB_NETGROUP_CLASS
 #define SYSDB_MPGC "|("SYSDB_UC")("SYSDB_GC")"
 
-#define SYSDB_PWNAM_FILTER "(&("SYSDB_UC")("SYSDB_NAME"=%s))"
+#define SYSDB_PWNAM_FILTER "(&("SYSDB_UC")(|("SYSDB_NAME_ALIAS"=%s)("SYSDB_NAME"=%s)))"
 #define SYSDB_PWUID_FILTER "(&("SYSDB_UC")("SYSDB_UIDNUM"=%lu))"
 #define SYSDB_PWENT_FILTER "("SYSDB_UC")"
 
-#define SYSDB_GRNAM_FILTER "(&("SYSDB_GC")("SYSDB_NAME"=%s))"
+#define SYSDB_GRNAM_FILTER "(&("SYSDB_GC")(|("SYSDB_NAME_ALIAS"=%s)("SYSDB_NAME"=%s)))"
 #define SYSDB_GRNA2_FILTER "(&("SYSDB_UC")("SYSDB_MEMBEROF"=%s))"
 #define SYSDB_GRGID_FILTER "(&("SYSDB_GC")("SYSDB_GIDNUM"=%lu))"
 #define SYSDB_GRENT_FILTER "("SYSDB_GC")"
-#define SYSDB_GRNAM_MPG_FILTER "(&("SYSDB_MPGC")("SYSDB_NAME"=%s))"
+#define SYSDB_GRNAM_MPG_FILTER "(&("SYSDB_MPGC")(|("SYSDB_NAME_ALIAS"=%s)("SYSDB_NAME"=%s)))"
 #define SYSDB_GRGID_MPG_FILTER "(&("SYSDB_MPGC")("SYSDB_GIDNUM"=%lu))"
 #define SYSDB_GRENT_MPG_FILTER "("SYSDB_MPGC")"
 
@@ -222,6 +223,10 @@ errno_t sysdb_attrs_primary_name(struct sysdb_ctx *sysdb,
                                  struct sysdb_attrs *attrs,
                                  const char *ldap_attr,
                                  const char **_primary);
+errno_t sysdb_attrs_get_aliases(TALLOC_CTX *mem_ctx,
+                                struct sysdb_attrs *attrs,
+                                const char *primary,
+                                const char ***_aliases);
 errno_t sysdb_attrs_primary_name_list(struct sysdb_ctx *sysdb,
                                       TALLOC_CTX *mem_ctx,
                                       struct sysdb_attrs **attr_list,
@@ -734,5 +739,12 @@ errno_t sysdb_remove_attrs(struct sysdb_ctx *sysdb,
                            const char *name,
                            enum sysdb_member_type type,
                            char **remove_attrs);
+
+errno_t sysdb_get_direct_parents(TALLOC_CTX *mem_ctx,
+                                 struct sysdb_ctx *sysdb,
+                                 struct sss_domain_info *dom,
+                                 enum sysdb_member_type mtype,
+                                 const char *name,
+                                 char ***_direct_parents);
 
 #endif /* __SYS_DB_H__ */

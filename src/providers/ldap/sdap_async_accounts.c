@@ -55,6 +55,7 @@ static int sdap_save_user(TALLOC_CTX *memctx,
     char *usn_value = NULL;
     size_t c;
     char **missing = NULL;
+    const char **aliases = NULL;
     TALLOC_CTX *tmpctx = NULL;
 
     DEBUG(9, ("Save user\n"));
@@ -281,6 +282,20 @@ static int sdap_save_user(TALLOC_CTX *memctx,
         }
     }
 
+    ret = sysdb_attrs_get_aliases(tmpctx, attrs, name, &aliases);
+    if (ret != EOK) {
+        DEBUG(1, ("Failed to get the alias list"));
+        goto fail;
+    }
+
+    for (i = 0; aliases[i]; i++) {
+        ret = sysdb_attrs_add_string(user_attrs, SYSDB_NAME_ALIAS,
+                                     aliases[i]);
+        if (ret) {
+            goto fail;
+        }
+    }
+
     /* Make sure that any attributes we requested from LDAP that we
      * did not receive are also removed from the sysdb
      */
@@ -364,6 +379,12 @@ static int sdap_save_users(TALLOC_CTX *memctx,
             DEBUG(2, ("Failed to store user %d. Ignoring.\n", i));
         } else {
             DEBUG(9, ("User %d processed!\n", i));
+        }
+
+        ret = sdap_check_aliases(sysdb, users[i], dom,
+                                 opts, true);
+        if (ret) {
+            DEBUG(2, ("Failed to check aliases for user %d. Ignoring.\n", i));
         }
 
         if (usn_value) {
@@ -710,9 +731,11 @@ static int sdap_save_group(TALLOC_CTX *memctx,
     const char *name = NULL;
     gid_t gid;
     int ret;
+    int i;
     char *usn_value = NULL;
     TALLOC_CTX *tmpctx = NULL;
     bool posix_group;
+    const char **aliases = NULL;
 
     tmpctx = talloc_new(memctx);
     if (!tmpctx) {
@@ -852,6 +875,20 @@ static int sdap_save_group(TALLOC_CTX *memctx,
             if (ret) {
                 goto fail;
             }
+        }
+    }
+
+    ret = sysdb_attrs_get_aliases(tmpctx, attrs, name, &aliases);
+    if (ret != EOK) {
+        DEBUG(1, ("Failed to get the alias list\n"));
+        goto fail;
+    }
+
+    for (i = 0; aliases[i]; i++) {
+        ret = sysdb_attrs_add_string(group_attrs, SYSDB_NAME_ALIAS,
+                                        aliases[i]);
+        if (ret) {
+            goto fail;
         }
     }
 
@@ -1211,6 +1248,10 @@ sdap_process_missing_member_2307bis(struct tevent_req *req,
                                     int num_users);
 
 static int
+sdap_add_group_member_2307(struct sdap_process_group_state *state,
+                           const char *username);
+
+static int
 sdap_process_group_members_2307bis(struct tevent_req *req,
                                    struct sdap_process_group_state *state,
                                    struct ldb_message_element *memberel)
@@ -1304,7 +1345,6 @@ sdap_process_group_members_2307(struct sdap_process_group_state *state,
     struct ldb_message *msg;
     bool in_transaction = false;
     char *member_name;
-    char *strdn;
     int ret;
     errno_t sret;
     int i;
@@ -1319,23 +1359,17 @@ sdap_process_group_members_2307(struct sdap_process_group_state *state,
                                         state->dom, member_name,
                                         NULL, &msg);
         if (ret == EOK) {
-            strdn = sysdb_user_strdn(state->sysdb_dns->values,
-                                     state->dom->name,
-                                     member_name);
-            if (!strdn) {
-                ret = ENOMEM;
+            /*
+             * User already cached in sysdb. Remember the sysdb DN for later
+             * use by sdap_save_groups()
+             */
+            DEBUG(7, ("Member already cached in sysdb: %s\n", member_name));
+
+            ret = sdap_add_group_member_2307(state, member_name);
+            if (ret != EOK) {
+                DEBUG(1, ("Could not add member %s into sysdb\n", member_name));
                 goto done;
             }
-            /*
-            * User already cached in sysdb. Remember the sysdb DN for later
-            * use by sdap_save_groups()
-            */
-            DEBUG(7,("Member already cached in sysdb: %s\n", strdn));
-            state->sysdb_dns->values[state->sysdb_dns->num_values].data =
-                    (uint8_t *) strdn;
-            state->sysdb_dns->values[state->sysdb_dns->num_values].length =
-                    strlen(strdn);
-            state->sysdb_dns->num_values++;
         } else if (ret == ENOENT) {
             /* The user is not in sysdb, need to add it */
             DEBUG(7, ("member #%d (%s): not found in sysdb\n",
@@ -1436,16 +1470,72 @@ sdap_process_missing_member_2307bis(struct tevent_req *req,
 }
 
 static int
+sdap_add_group_member_2307(struct sdap_process_group_state *state,
+                           const char *username)
+{
+    char *strdn;
+
+    strdn = sysdb_user_strdn(state->sysdb_dns->values,
+                             state->dom->name, username);
+    if (!strdn) {
+        return ENOMEM;
+    }
+
+    state->sysdb_dns->values[state->sysdb_dns->num_values].data =
+            (uint8_t *) strdn;
+    state->sysdb_dns->values[state->sysdb_dns->num_values].length =
+            strlen(strdn);
+    state->sysdb_dns->num_values++;
+
+    return EOK;
+}
+
+static int
 sdap_process_missing_member_2307(struct sdap_process_group_state *state,
-                                 char *username, bool *in_transaction)
+                                 char *member_name, bool *in_transaction)
 {
     int ret, sret;
-    struct ldb_dn *dn;
-    char* dn_string;
-
-    DEBUG(7, ("Adding a dummy entry\n"));
+    TALLOC_CTX *tmp_ctx;
+    const char *filter;
+    const char *username;
+    size_t count;
+    struct ldb_message **msgs = NULL;
+    static const char *attrs[] = { SYSDB_NAME, NULL };
 
     if (!in_transaction) return EINVAL;
+
+    tmp_ctx = talloc_new(NULL);
+    if (!tmp_ctx) return ENOMEM;
+
+    /* Check for the alias in the sysdb */
+    filter = talloc_asprintf(tmp_ctx, "(%s=%s)", SYSDB_NAME_ALIAS, member_name);
+    if (!filter) {
+        ret = ENOMEM;
+        goto fail;
+    }
+
+    ret = sysdb_search_users(tmp_ctx, state->sysdb, state->dom,
+                             filter, attrs, &count, &msgs);
+    if (ret == EOK && count > 0) {
+        /* Entry exists but the group references it with an alias. */
+
+        if (count != 1) {
+            DEBUG(1, ("More than one entry with this alias?\n"));
+            ret = EIO;
+            goto fail;
+        }
+
+        /* fill username with primary name */
+        username = ldb_msg_find_attr_as_string(msgs[0], SYSDB_NAME, NULL);
+        goto done;
+    } else if (ret != EOK && ret != ENOENT) {
+        ret = EIO;
+        goto fail;
+    }
+
+    username = member_name;
+    /* The entry really does not exist, add a fake entry */
+    DEBUG(7, ("Adding a dummy entry\n"));
 
     if (!*in_transaction) {
         ret = sysdb_transaction_start(state->sysdb);
@@ -1468,27 +1558,17 @@ sdap_process_missing_member_2307(struct sdap_process_group_state *state,
      * Convert the just received DN into the corresponding sysdb DN
      * for saving into member attribute of the group
      */
-    dn = sysdb_user_dn(state->sysdb, state, state->dom->name,
-                       (char*) username);
-    if (!dn) {
-        ret = ENOMEM;
+done:
+    ret = sdap_add_group_member_2307(state, username);
+    if (ret != EOK) {
+        DEBUG(1, ("Could not add group member %s\n", username));
         goto fail;
     }
 
-    dn_string = ldb_dn_alloc_linearized(state->sysdb_dns->values, dn);
-    if (!dn_string) {
-        ret = ENOMEM;
-        goto fail;
-    }
-
-    state->sysdb_dns->values[state->sysdb_dns->num_values].data =
-            (uint8_t *) dn_string;
-    state->sysdb_dns->values[state->sysdb_dns->num_values].length =
-            strlen(dn_string);
-    state->sysdb_dns->num_values++;
-
+    talloc_free(tmp_ctx);
     return EOK;
 fail:
+    talloc_free(tmp_ctx);
     if (*in_transaction) {
         sret = sysdb_transaction_cancel(state->sysdb);
         if (sret == EOK) {
@@ -2702,20 +2782,13 @@ static int sdap_initgr_nested_store_group(struct sysdb_ctx *sysdb,
                                           int ngroups)
 {
     TALLOC_CTX *tmp_ctx;
-    const char *member_filter;
     const char *group_orig_dn;
     const char *group_name;
-    const char *group_dn;
     int ret;
-    int i;
-    struct ldb_message **direct_sysdb_groups = NULL;
-    size_t direct_sysdb_count = 0;
-    static const char *group_attrs[] = { SYSDB_NAME, NULL };
     struct ldb_dn *basedn;
     int ndirect;
     struct sysdb_attrs **direct_groups;
     char **sysdb_grouplist = NULL;
-    const char *tmp_str;
 
     tmp_ctx = talloc_new(NULL);
     if (!tmp_ctx) return ENOMEM;
@@ -2741,58 +2814,13 @@ static int sdap_initgr_nested_store_group(struct sysdb_ctx *sysdb,
     }
 
     /* Get direct sysdb parents */
-    group_dn = sysdb_group_strdn(tmp_ctx, dom->name, group_name);
-    if (!group_dn) {
-        ret = ENOMEM;
+    ret = sysdb_get_direct_parents(tmp_ctx, sysdb, dom, SYSDB_MEMBER_GROUP,
+                                   group_name, &sysdb_grouplist);
+    if (ret) {
+        DEBUG(1, ("Could not get direct parents for %s: %d [%s]\n",
+                    group_name, ret, strerror(ret)));
         goto done;
     }
-
-    member_filter = talloc_asprintf(tmp_ctx, "(&(%s=%s)(%s=%s))",
-                                    SYSDB_OBJECTCLASS, SYSDB_GROUP_CLASS,
-                                    SYSDB_MEMBER, group_dn);
-    if (!member_filter) {
-        ret = ENOMEM;
-        goto done;
-    }
-
-    DEBUG(8, ("searching sysdb with filter %s\n", member_filter));
-
-    ret = sysdb_search_entry(tmp_ctx, sysdb, basedn,
-                             LDB_SCOPE_SUBTREE, member_filter, group_attrs,
-                             &direct_sysdb_count, &direct_sysdb_groups);
-    if (ret == EOK) {
-        /* Get the list of sysdb groups by name */
-        sysdb_grouplist = talloc_array(tmp_ctx, char *, direct_sysdb_count+1);
-        if (!sysdb_grouplist) {
-            ret = ENOMEM;
-            goto done;
-        }
-
-        for(i = 0; i < direct_sysdb_count; i++) {
-            tmp_str = ldb_msg_find_attr_as_string(direct_sysdb_groups[i],
-                                                SYSDB_NAME, NULL);
-            if (!tmp_str) {
-                /* This should never happen, but if it does, just continue */
-                continue;
-            }
-
-            sysdb_grouplist[i] = talloc_strdup(sysdb_grouplist, tmp_str);
-            if (!sysdb_grouplist[i]) {
-                DEBUG(1, ("A group with no name?\n"));
-                ret = EIO;
-                goto done;
-            }
-        }
-        sysdb_grouplist[i] = NULL;
-    } else if (ret == ENOENT) {
-        direct_sysdb_groups = NULL;
-        direct_sysdb_count = 0;
-    } else {
-        DEBUG(2, ("sysdb_search_entry failed: [%d]: %s\n", ret, strerror(ret)));
-        goto done;
-    }
-    DEBUG(7, ("The group %s is a member of %d sysdb groups\n",
-              group_name, direct_sysdb_count));
 
     /* Filter only parents from full set */
     ret = sdap_initgr_nested_get_direct_parents(tmp_ctx, group, groups,
@@ -3059,6 +3087,13 @@ static void sdap_get_initgr_user(struct tevent_req *subreq)
 
     switch (state->opts->schema_type) {
     case SDAP_SCHEMA_RFC2307:
+        ret = sdap_check_aliases(state->sysdb, state->orig_user, state->dom,
+                                 state->opts, false);
+        if (ret != EOK) {
+            tevent_req_error(req, ret);
+            return;
+        }
+
         subreq = sdap_initgr_rfc2307_send(state, state->ev, state->opts,
                                     state->sysdb, state->dom, state->sh,
                                     dp_opt_get_string(state->opts->basic,
