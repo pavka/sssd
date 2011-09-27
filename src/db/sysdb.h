@@ -300,6 +300,13 @@ int sysdb_domain_init(TALLOC_CTX *mem_ctx,
                       struct sss_domain_info *domain,
                       const char *db_path,
                       struct sysdb_ctx **_ctx);
+/* calls sysdb_domain_init() and does some local-domain
+ * specific initialization */
+int sysdb_local_domain_init(TALLOC_CTX *mem_ctx,
+                            struct confdb_ctx *cdb,
+                            struct sss_domain_info *domain,
+                            const char *db_path,
+                            struct sysdb_ctx **_ctx);
 
 int sysdb_list_init(TALLOC_CTX *mem_ctx,
                     const char *path,

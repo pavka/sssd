@@ -1671,6 +1671,73 @@ done:
     return ret;
 }
 
+static int sysdb_local_domain_init_internal(struct sss_domain_info *domain,
+                                            struct confdb_ctx *cdb,
+                                            struct sysdb_ctx *ctx)
+{
+    int ret;
+    int i;
+    TALLOC_CTX *tmp_ctx;
+    uint32_t uid;
+    const char *conf_path;
+    char **values;
+    struct ldb_result *res;
+
+    /* The local provider s the only true MPG,
+     * for the other domains, the provider actually unrolls MPGs */
+    ctx->mpg = true;
+
+    tmp_ctx = talloc_new(NULL);
+    if (!tmp_ctx) return ENOMEM;
+
+    conf_path = talloc_asprintf(tmp_ctx, CONFDB_DOMAIN_PATH_TMPL,
+                                domain->name);
+    if (!conf_path) {
+        ret = ENOMEM;
+        goto done;
+    }
+
+    ret = confdb_get_param(cdb, tmp_ctx, conf_path,
+                           CONFDB_DOMAIN_MINID, &values);
+    if (ret != EOK) {
+        DEBUG(3, ("confdb lookup for %s failed: [%d]: %s\n",
+                  CONFDB_DOMAIN_MINID, ret, strerror(ret)));
+        goto done;
+    }
+
+    if (values && values[0]) {
+        DEBUG(7, ("%s set in local domain, using its value\n"));
+        ret = EOK;
+        goto done;
+    }
+
+    ret = sysdb_enumpwent(tmp_ctx, ctx, &res);
+    if (res->count == 0) {
+        DEBUG(7, ("No users in local domain\n"));
+        ret = EOK;
+        goto done;
+    }
+
+    for (i=0; i < res->count; i++) {
+        uid = ldb_msg_find_attr_as_uint64(res->msgs[i], SYSDB_UIDNUM, 0);
+        if (uid == 0) {
+            DEBUG(6, ("Incomplete or fake user in local db? Skipping.\n"));
+            continue;
+        }
+
+        if (uid < domain->id_min) {
+            DEBUG(3, ("Found user with lower ID than the default min_id. "
+                      "Setting local domain min_id to %llu\n", uid));
+            domain->id_min = uid;
+        }
+    }
+
+    ret = EOK;
+done:
+    talloc_free(tmp_ctx);
+    return ret;
+}
+
 static int sysdb_domain_init_internal(TALLOC_CTX *mem_ctx,
                                       struct sss_domain_info *domain,
                                       const char *db_path,
@@ -1693,12 +1760,6 @@ static int sysdb_domain_init_internal(TALLOC_CTX *mem_ctx,
         return ENOMEM;
     }
     sysdb->domain = domain;
-
-    /* The local provider s the only true MPG,
-     * for the other domains, the provider actually unrolls MPGs */
-    if (strcasecmp(domain->provider, "local") == 0) {
-        sysdb->mpg = true;
-    }
 
     ret = sysdb_get_db_file(sysdb, domain->provider,
                             domain->name, db_path,
@@ -2002,6 +2063,15 @@ int sysdb_init(TALLOC_CTX *mem_ctx,
             return ret;
         }
 
+        if (strcasecmp(dom->provider, "local") == 0) {
+            ret = sysdb_local_domain_init_internal(dom, cdb, sysdb);
+            if (ret != EOK) {
+                talloc_zfree(sysdb);
+                talloc_zfree(ctx_list);
+                return ret;
+            }
+        }
+
         ctx_list->dbs[ctx_list->num_dbs] = sysdb;
         ctx_list->num_dbs++;
     }
@@ -2013,6 +2083,35 @@ int sysdb_init(TALLOC_CTX *mem_ctx,
 
     *_ctx_list = ctx_list;
 
+    return EOK;
+}
+
+int sysdb_local_domain_init(TALLOC_CTX *mem_ctx,
+                            struct confdb_ctx *cdb,
+                            struct sss_domain_info *domain,
+                            const char *db_path,
+                            struct sysdb_ctx **_ctx)
+{
+    int ret;
+    struct sysdb_ctx *ctx;
+
+    ret = sysdb_domain_init_internal(mem_ctx, domain,
+                                     db_path, false, &ctx);
+    if (ret != EOK) {
+        DEBUG(2, ("sysdb_domain_init_internal failed: [%d]: %s\n",
+                   ret, strerror(ret)));
+        return ret;
+    }
+
+    ret = sysdb_local_domain_init_internal(domain, cdb, ctx);
+    if (ret != EOK) {
+        DEBUG(2, ("sysdb_domain_init_internal failed: [%d]: %s\n",
+                   ret, strerror(ret)));
+        talloc_free(ctx);
+        return ret;
+    }
+
+    *_ctx = ctx;
     return EOK;
 }
 
