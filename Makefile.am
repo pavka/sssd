@@ -28,6 +28,7 @@ dbusintrospectdir = $(datarootdir)/sssd/introspect
 localedir = @localedir@
 nsslibdir = @nsslibdir@
 pamlibdir = @pammoddir@
+libsss_sudoplugindir = @sudo_pluginpath@
 
 dbpath = @dbpath@
 pluginpath = @pluginpath@
@@ -69,6 +70,7 @@ sbin_PROGRAMS = \
 sssdlibexec_PROGRAMS = \
     sssd_nss \
     sssd_pam \
+    sssd_sudo \
     sssd_be \
     krb5_child \
     ldap_child \
@@ -205,6 +207,7 @@ AM_CPPFLAGS = \
     -DSSS_NSS_SOCKET_NAME=\"$(pipepath)/nss\" \
     -DSSS_PAM_SOCKET_NAME=\"$(pipepath)/pam\" \
     -DSSS_PAM_PRIV_SOCKET_NAME=\"$(pipepath)/private/pam\" \
+    -DSSS_SUDO_SOCKET_NAME=\"$(pipepath)/sudo\" \
     -DLOCALEDIR=\"$(localedir)\"
 
 EXTRA_DIST = build/config.rpath
@@ -422,6 +425,14 @@ sssd_pam_SOURCES = \
     $(SSSD_RESPONDER_OBJ)
 sssd_pam_LDADD = \
     $(TDB_LIBS) \
+    $(SSSD_LIBS) \
+    libsss_util.la
+    
+sssd_sudo_SOURCES = \
+    src/responder/sudo/sudosrv.c \
+    src/responder/sudo/sudosrv_cmd.c \
+    $(SSSD_RESPONDER_OBJ)
+sssd_sudo_LDADD = \
     $(SSSD_LIBS) \
     libsss_util.la
 
@@ -809,6 +820,15 @@ pam_sss_la_LDFLAGS = \
     -module \
     -avoid-version \
     -Wl,--version-script,$(srcdir)/src/sss_client/sss_pam.exports
+    
+libsss_sudoplugin_LTLIBRARIES = libsss_sudoplugin.la
+libsss_sudoplugin_la_SOURCES = \
+    src/sss_client/sudo_plugin/sss_sudoplugin.c \
+    src/sss_client/sudo_plugin/sss_sudo_to_lib.c \
+    src/sss_client/common.c \
+	src/sss_client/sss_cli.h
+libsss_sudoplugin_la_LDFLAGS = \
+    -module
 
 dist_noinst_DATA += \
     src/sss_client/sss_nss.exports \
