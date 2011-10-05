@@ -461,7 +461,7 @@ static int monitor_dbus_init(struct mt_ctx *ctx)
 
     ret = sbus_new_server(ctx, ctx->ev,
                           monitor_address, &monitor_server_interface,
-                          &ctx->sbus_srv, monitor_service_init, ctx);
+                          false, &ctx->sbus_srv, monitor_service_init, ctx);
 
     talloc_free(monitor_address);
 
@@ -2384,7 +2384,7 @@ int main(int argc, const char *argv[])
     }
 
     /* Warn if nscd seems to be running */
-    ret = check_file(NSCD_SOCKET_PATH, -1, -1, -1, CHECK_SOCK, NULL);
+    ret = check_file(NSCD_SOCKET_PATH, -1, -1, -1, CHECK_SOCK, NULL, false);
     if (ret == EOK) {
         sss_log(SSS_LOG_NOTICE,
                 "nscd socket was detected.  Nscd caching capabilities "
