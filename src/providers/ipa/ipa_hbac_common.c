@@ -99,17 +99,8 @@ ipa_hbac_sysdb_save(struct sysdb_ctx *sysdb, struct sss_domain_info *domain,
                     const char *group_subdir, const char *groupattr_name,
                     size_t group_count, struct sysdb_attrs **groups)
 {
-    int lret;
     errno_t ret, sret;
     bool in_transaction = false;
-    const char **orig_member_dns;
-    size_t i, j, member_count;
-    struct ldb_message **members;
-    TALLOC_CTX *tmp_ctx = NULL;
-    const char *member_dn;
-    const char *group_id;
-    struct ldb_message *msg;
-    char *member_filter;
 
     if ((primary_count == 0 || primary == NULL)
         || (group_count > 0 && groups == NULL)) {
@@ -150,117 +141,6 @@ ipa_hbac_sysdb_save(struct sysdb_ctx *sysdb, struct sss_domain_info *domain,
                       group_subdir, ret, strerror(ret)));
             goto done;
         }
-
-        /* Third, save the memberships */
-        for (i = 0; i < group_count; i++) {
-            if (!groups[i]) {
-                ret = EINVAL;
-                goto done;
-            }
-
-            talloc_free(tmp_ctx);
-            tmp_ctx = talloc_new(NULL);
-            if (tmp_ctx == NULL) {
-                ret = ENOMEM;
-                goto done;
-            }
-
-            ret = sysdb_attrs_get_string(groups[i],
-                                         groupattr_name,
-                                         &group_id);
-            if (ret != EOK) {
-                DEBUG(1, ("Could not determine group attribute name\n"));
-                goto done;
-            }
-
-            msg = ldb_msg_new(tmp_ctx);
-            if (msg == NULL) {
-                ret = ENOMEM;
-                goto done;
-            }
-
-            msg->dn = sysdb_custom_dn(sysdb, msg, domain->name,
-                                      group_id, group_subdir);
-            if (msg->dn == NULL) {
-                ret = ENOMEM;
-                goto done;
-            }
-
-            ret = sysdb_attrs_get_string_array(groups[i],
-                                               SYSDB_ORIG_MEMBER,
-                                               tmp_ctx,
-                                               &orig_member_dns);
-
-            if (ret == EOK) {
-                /* One or more members were detected, prep the LDB message */
-                lret = ldb_msg_add_empty(msg, SYSDB_MEMBER, LDB_FLAG_MOD_ADD, NULL);
-                if (lret != LDB_SUCCESS) {
-                    ret = sysdb_error_to_errno(lret);
-                    goto done;
-                }
-            } else if (ret == ENOENT) {
-                /* Useless group, has no members */
-                orig_member_dns = talloc_array(tmp_ctx, const char *, 1);
-                if (!orig_member_dns) {
-                    ret = ENOMEM;
-                    goto done;
-                }
-
-                /* Just set the member list to zero length so we skip
-                 * processing it below
-                 */
-                orig_member_dns[0] = NULL;
-            } else {
-                DEBUG(1, ("Could not determine original members\n"));
-                goto done;
-            }
-
-            for (j = 0; orig_member_dns[j]; j++) {
-                member_filter = talloc_asprintf(tmp_ctx, "%s=%s",
-                                                SYSDB_ORIG_DN,
-                                                orig_member_dns[j]);
-                if (member_filter == NULL) {
-                    ret = ENOMEM;
-                    goto done;
-                }
-
-                ret = sysdb_search_custom(tmp_ctx, sysdb, domain,
-                                          member_filter, primary_subdir,
-                                          NULL, &member_count, &members);
-                talloc_zfree(member_filter);
-                if (ret != EOK && ret != ENOENT) {
-                    goto done;
-                } else if (ret == ENOENT || member_count == 0) {
-                    /* No member exists with this orig_dn. Skip it */
-                    DEBUG(6, ("[%s] does not exist\n", orig_member_dns[j]));
-                    continue;
-                } else if (member_count > 1) {
-                    /* This probably means corruption in the cache, but
-                     * we'll try to proceed anyway.
-                     */
-                    DEBUG(1, ("More than one result for DN [%s], skipping\n"));
-                    continue;
-                }
-
-                member_dn = ldb_dn_get_linearized(members[0]->dn);
-                if (!member_dn) {
-                    ret = ENOMEM;
-                    goto done;
-                }
-                lret = ldb_msg_add_fmt(msg, SYSDB_MEMBER, "%s", member_dn);
-                if (lret != LDB_SUCCESS) {
-                    ret = sysdb_error_to_errno(lret);
-                    goto done;
-                }
-            }
-
-            lret = ldb_modify(sysdb_ctx_get_ldb(sysdb), msg);
-            if (lret != LDB_SUCCESS) {
-                ret = sysdb_error_to_errno(lret);
-                goto done;
-            }
-        }
-        talloc_zfree(tmp_ctx);
     }
 
     ret = sysdb_transaction_commit(sysdb);
@@ -525,7 +405,7 @@ static errno_t
 hbac_eval_service_element(TALLOC_CTX *mem_ctx,
                           struct sysdb_ctx *sysdb,
                           struct sss_domain_info *domain,
-                          const char *hostname,
+                          const char *servicename,
                           struct hbac_request_element **svc_element);
 
 static errno_t
@@ -708,18 +588,18 @@ static errno_t
 hbac_eval_service_element(TALLOC_CTX *mem_ctx,
                           struct sysdb_ctx *sysdb,
                           struct sss_domain_info *domain,
-                          const char *hostname,
+                          const char *servicename,
                           struct hbac_request_element **svc_element)
 {
     errno_t ret;
-    size_t i, count;
+    size_t i, j, count;
     TALLOC_CTX *tmp_ctx;
     struct hbac_request_element *svc;
     struct ldb_message **msgs;
-    const char *group_name;
+    struct ldb_message_element *el;
     struct ldb_dn *svc_dn;
-    const char *attrs[] = { IPA_CN, NULL };
-    const char *service_filter;
+    const char *memberof_attrs[] = { SYSDB_ORIG_MEMBEROF, NULL };
+    char *name;
 
     tmp_ctx = talloc_new(mem_ctx);
     if (tmp_ctx == NULL) return ENOMEM;
@@ -730,15 +610,7 @@ hbac_eval_service_element(TALLOC_CTX *mem_ctx,
         goto done;
     }
 
-    svc->name = hostname;
-
-    service_filter = talloc_asprintf(tmp_ctx,
-                                     "(objectClass=%s)",
-                                     IPA_HBAC_SERVICE_GROUP);
-    if (service_filter == NULL) {
-        ret = ENOMEM;
-        goto done;
-    }
+    svc->name = servicename;
 
     svc_dn = sysdb_custom_dn(sysdb, tmp_ctx, domain->name,
                              svc->name, HBAC_SERVICES_SUBDIR);
@@ -747,46 +619,68 @@ hbac_eval_service_element(TALLOC_CTX *mem_ctx,
         goto done;
     }
 
-    /* Find the service groups */
-    ret = sysdb_asq_search(tmp_ctx, sysdb, domain, svc_dn,
-                           service_filter, SYSDB_MEMBEROF,
-                           attrs, &count, &msgs);
-    if (ret != EOK && ret != ENOENT) {
-        DEBUG(1, ("Could not look up servicegroups\n"));
+    /* Look up the service to get its originalMemberOf entries */
+    ret = sysdb_search_entry(tmp_ctx, sysdb, svc_dn,
+                             LDB_SCOPE_BASE, NULL,
+                             memberof_attrs,
+                             &count, &msgs);
+    if (ret == ENOENT || count == 0) {
+        /* We won't be able to identify any groups
+         * This rule will only match the name or
+         * a service category of ALL
+         */
+        svc->groups = NULL;
+        ret = EOK;
         goto done;
-    } else if (ret == ENOENT) {
-        count = 0;
+    } else if (ret != EOK) {
+        goto done;
+    } else if (count > 1) {
+        DEBUG(1, ("More than one result for a BASE search!\n"));
+        ret = EIO;
+        goto done;
     }
 
-    svc->groups = talloc_array(svc, const char *, count + 1);
+    el = ldb_msg_find_element(msgs[0], SYSDB_ORIG_MEMBEROF);
+    if (!el) {
+        /* Service is not a member of any groups
+         * This rule will only match the name or
+         * a service category of ALL
+         */
+        svc->groups = NULL;
+        ret = EOK;
+    }
+
+
+    svc->groups = talloc_array(svc, const char *, el->num_values + 1);
     if (svc->groups == NULL) {
         ret = ENOMEM;
         goto done;
     }
 
-    for (i = 0; i < count; i++) {
-        group_name = ldb_msg_find_attr_as_string(msgs[i], IPA_CN, NULL);
-        if (group_name == NULL) {
-            DEBUG(1, ("Group with no name?\n"));
-            ret = EINVAL;
-            goto done;
-        }
-        svc->groups[i] = talloc_strdup(svc->groups,
-                                       group_name);
-        if (svc->groups[i] == NULL) {
-            ret = ENOMEM;
-            goto done;
-        }
+    for (i = j = 0; i < el->num_values; i++) {
+        ret = get_ipa_servicegroupname(tmp_ctx, sysdb,
+                                       (const char *)el->values[i].data,
+                                       &name);
+        if (ret != EOK && ret != ENOENT) goto done;
 
-        DEBUG(6, ("Added service group [%s] to the eval request\n",
-                  svc->groups[i]));
+        /* ENOENT means we had a memberOf entry that wasn't a
+         * service group. We'll just ignore those (could be
+         * HBAC rules)
+         */
+
+        if (ret == EOK) {
+            svc->groups[j] = talloc_steal(svc->groups, name);
+            j++;
+        }
     }
-    svc->groups[i] = NULL;
+    svc->groups[j] = NULL;
 
-    *svc_element = talloc_steal(mem_ctx, svc);
     ret = EOK;
 
 done:
+    if (ret == EOK) {
+        *svc_element = talloc_steal(mem_ctx, svc);
+    }
     talloc_free(tmp_ctx);
     return ret;
 }
@@ -799,14 +693,14 @@ hbac_eval_host_element(TALLOC_CTX *mem_ctx,
                        struct hbac_request_element **host_element)
 {
     errno_t ret;
-    size_t i, count;
+    size_t i, j, count;
     TALLOC_CTX *tmp_ctx;
     struct hbac_request_element *host;
     struct ldb_message **msgs;
-    const char *group_name;
+    struct ldb_message_element *el;
     struct ldb_dn *host_dn;
-    const char *attrs[] = { IPA_CN, NULL };
-    const char *host_filter;
+    const char *memberof_attrs[] = { SYSDB_ORIG_MEMBEROF, NULL };
+    char *name;
 
     tmp_ctx = talloc_new(mem_ctx);
     if (tmp_ctx == NULL) return ENOMEM;
@@ -823,68 +717,74 @@ hbac_eval_host_element(TALLOC_CTX *mem_ctx,
         /* We don't know the host (probably an rhost)
          * So we can't determine it's groups either.
          */
-        host->groups = talloc_array(host, const char *, 1);
-        if (host->groups == NULL) {
-            ret = ENOMEM;
-            goto done;
-        }
-        host->groups[0] = NULL;
+        host->groups = NULL;
         ret = EOK;
         goto done;
     }
 
-    host_filter = talloc_asprintf(tmp_ctx,
-                                  "(objectClass=%s)",
-                                  IPA_HOSTGROUP);
-    if (host_filter == NULL) {
-        ret = ENOMEM;
-        goto done;
-    }
-
     host_dn = sysdb_custom_dn(sysdb, tmp_ctx, domain->name,
-                             host->name, HBAC_HOSTS_SUBDIR);
+                              host->name, HBAC_HOSTS_SUBDIR);
     if (host_dn == NULL) {
         ret = ENOMEM;
         goto done;
     }
 
-    /* Find the host groups */
-    ret = sysdb_asq_search(tmp_ctx, sysdb, domain, host_dn,
-                           host_filter, SYSDB_MEMBEROF,
-                           attrs, &count, &msgs);
-    if (ret != EOK && ret != ENOENT) {
-        DEBUG(1, ("Could not look up host groups\n"));
+    /* Look up the host to get its originalMemberOf entries */
+    ret = sysdb_search_entry(tmp_ctx, sysdb, host_dn,
+                             LDB_SCOPE_BASE, NULL,
+                             memberof_attrs,
+                             &count, &msgs);
+    if (ret == ENOENT || count == 0) {
+        /* We won't be able to identify any groups
+         * This rule will only match the name or
+         * a host category of ALL
+         */
+        host->groups = NULL;
+        ret =  EOK;
         goto done;
-    } else if (ret == ENOENT) {
-        count = 0;
+    } else if (ret != EOK) {
+        goto done;
+    } else if (count > 1) {
+        DEBUG(1, ("More than one result for a BASE search!\n"));
+        ret = EIO;
+        goto done;
     }
 
-    host->groups = talloc_array(host, const char *, count + 1);
+    el = ldb_msg_find_element(msgs[0], SYSDB_ORIG_MEMBEROF);
+    if (!el) {
+        /* Host is not a member of any groups
+         * This rule will only match the name or
+         * a host category of ALL
+         */
+        host->groups = NULL;
+        ret = EOK;
+        goto done;
+    }
+
+
+    host->groups = talloc_array(host, const char *, el->num_values + 1);
     if (host->groups == NULL) {
         ret = ENOMEM;
         goto done;
     }
 
-    for (i = 0; i < count; i++) {
-        group_name = ldb_msg_find_attr_as_string(msgs[i],
-                                                 IPA_CN,
-                                                 NULL);
-        if (group_name == NULL) {
-            DEBUG(1, ("Group with no name?\n"));
-            ret = EINVAL;
-            goto done;
-        }
-        host->groups[i] = talloc_strdup(host->groups,
-                                       group_name);
-        if (host->groups[i] == NULL) {
-            ret = ENOMEM;
-            goto done;
-        }
+    for (i = j = 0; i < el->num_values; i++) {
+        ret = get_ipa_hostgroupname(tmp_ctx, sysdb,
+                                    (const char *)el->values[i].data,
+                                    &name);
+        if (ret != EOK && ret != ENOENT) goto done;
 
-        DEBUG(6, ("Added host group [%s] to the eval request\n",
-                  host->groups[i]));
+        /* ENOENT means we had a memberOf entry that wasn't a
+         * host group. We'll just ignore those (could be
+         * HBAC rules)
+         */
+
+        if (ret == EOK) {
+            host->groups[j] = talloc_steal(host->groups, name);
+            j++;
+        }
     }
-    host->groups[i] = NULL;
+    host->groups[j] = NULL;
 
     ret = EOK;
 

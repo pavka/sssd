@@ -131,6 +131,11 @@ hbac_shost_attrs_to_rule(TALLOC_CTX *mem_ctx,
                          const char *rule_name,
                          struct sysdb_attrs *rule_attrs,
                          struct hbac_rule_element **source_hosts);
+errno_t
+get_ipa_hostgroupname(TALLOC_CTX *mem_ctx,
+                      struct sysdb_ctx *sysdb,
+                      const char *host_dn,
+                      char **hostgroupname);
 
 /* From ipa_hbac_services.c */
 struct tevent_req *
@@ -157,6 +162,11 @@ hbac_service_attrs_to_rule(TALLOC_CTX *mem_ctx,
                            const char *rule_name,
                            struct sysdb_attrs *rule_attrs,
                            struct hbac_rule_element **services);
+errno_t
+get_ipa_servicegroupname(TALLOC_CTX *mem_ctx,
+                         struct sysdb_ctx *sysdb,
+                         const char *service_dn,
+                         char **servicename);
 
 /* From ipa_hbac_rules.c */
 struct tevent_req *
