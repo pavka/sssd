@@ -103,8 +103,10 @@ create_socket_symlink(const char *filename, const char *symlink_filename)
     ret = symlink(filename, symlink_filename);
     if (ret != 0 && errno == EEXIST) {
         /* Perhaps cruft after a previous server? */
+        errno = 0;
         ret = unlink(symlink_filename);
         if (ret != 0) {
+            ret = errno;
             DEBUG(1, ("Cannot remove old symlink: [%d][%s].\n",
                       ret, strerror(ret)));
             return EIO;
@@ -132,7 +134,7 @@ remove_socket_symlink(const char *symlink_name)
     ssize_t numread = 0;
 
     errno = 0;
-    numread = readlink(symlink_name, target, PATH_MAX);
+    numread = readlink(symlink_name, target, PATH_MAX-1);
     if (numread < 0) {
         ret = errno;
         DEBUG(2, ("readlink failed [%d]: %s\n", ret, strerror(ret)));
