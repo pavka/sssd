@@ -30,6 +30,8 @@ struct sudo_ctx {
 
 int sudo_cmd_execute(struct cli_ctx *cctx);
 
+int sudo_dp_refresh_send(struct cli_ctx *cctx, const char *domain, int timeout);
+
 struct sss_cmd_table *get_sudo_cmds(void);
 
 #endif /* SUDOSRV_H_ */
