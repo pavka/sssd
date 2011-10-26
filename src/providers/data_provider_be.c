@@ -80,11 +80,13 @@ struct sbus_interface monitor_be_interface = {
 static int client_registration(DBusMessage *message, struct sbus_connection *conn);
 static int be_get_account_info(DBusMessage *message, struct sbus_connection *conn);
 static int be_pam_handler(DBusMessage *message, struct sbus_connection *conn);
+static int be_sudo_handler(DBusMessage *message, struct sbus_connection *conn);
 
 struct sbus_method be_methods[] = {
     { DP_METHOD_REGISTER, client_registration },
     { DP_METHOD_GETACCTINFO, be_get_account_info },
     { DP_METHOD_PAMHANDLER, be_pam_handler },
+    { DP_METHOD_SUDOHANDLER, be_sudo_handler },
     { NULL, NULL }
 };
 
@@ -102,6 +104,7 @@ static struct bet_data bet_data[] = {
     {BET_AUTH, CONFDB_DOMAIN_AUTH_PROVIDER, "sssm_%s_auth_init"},
     {BET_ACCESS, CONFDB_DOMAIN_ACCESS_PROVIDER, "sssm_%s_access_init"},
     {BET_CHPASS, CONFDB_DOMAIN_CHPASS_PROVIDER, "sssm_%s_chpass_init"},
+    {BET_SUDO, CONFDB_DOMAIN_SUDO_PROVIDER, "sssm_%s_sudo_init"},
     {BET_MAX, NULL, NULL}
 };
 
@@ -593,6 +596,94 @@ done:
     return EOK;
 }
 
+static void be_sudo_handler_callback(struct be_req *req,
+                                     int dp_err_type,
+                                     int errnum,
+                                     const char *errstr)
+{
+    DBusMessage *reply = NULL;
+    DBusConnection *dbus_conn = NULL;
+
+    reply = (DBusMessage*)(req->pvt);
+
+    DEBUG(SSSDBG_FUNC_DATA, ("SUDO Backend returned: (%d, %d, %s)\n",
+                             dp_err_type, errnum, errstr ? errstr : "<NULL>"));
+
+    dbus_conn = sbus_get_connection(req->becli->conn);
+    dbus_connection_send(dbus_conn, reply, NULL);
+    dbus_message_unref(reply);
+
+    talloc_free(req);
+}
+
+static int be_sudo_handler(DBusMessage *message, struct sbus_connection *conn)
+{
+    DBusError dbus_error;
+    DBusMessage *reply = NULL;
+    struct be_client *be_cli = NULL;
+    struct be_req *be_req = NULL;
+    void *user_data = NULL;
+    int ret = 0;
+
+    DEBUG(SSSDBG_TRACE_FUNC, ("Entering be_sudo_handler()\n"));
+
+    user_data = sbus_conn_get_private_data(conn);
+    if (user_data == NULL) {
+        return EINVAL;
+    }
+    be_cli = talloc_get_type(user_data, struct be_client);
+    if (be_cli == NULL) {
+        return EINVAL;
+    }
+
+    reply = dbus_message_new_method_return(message);
+    if (!reply) {
+        DEBUG(SSSDBG_CRIT_FAILURE,
+              ("dbus_message_new_method_return failed, cannot send reply.\n"));
+        return ENOMEM;
+    }
+
+    be_req = talloc_zero(be_cli, struct be_req);
+    if (be_req == NULL) {
+        DEBUG(SSSDBG_CRIT_FAILURE, ("talloc_zero failed.\n"));
+        dbus_message_unref(reply);
+        return ENOMEM;
+    }
+
+    be_req->becli = be_cli;
+    be_req->be_ctx = be_cli->bectx;
+    be_req->pvt = reply;
+    be_req->req_data = NULL;
+    be_req->fn = be_sudo_handler_callback;
+
+    dbus_error_init(&dbus_error);
+
+    /* return an error if corresponding backend target is not configured */
+    if (!be_cli->bectx->bet_info[BET_SUDO].bet_ops) {
+        DEBUG(SSSDBG_CRIT_FAILURE, ("Undefined backend target.\n"));
+        goto done;
+    }
+
+    ret = be_file_request(be_cli->bectx,
+                          be_cli->bectx->bet_info[BET_SUDO].bet_ops->handler,
+                          be_req);
+    if (ret != EOK) {
+        DEBUG(SSSDBG_CRIT_FAILURE, ("be_file_request failed.\n"));
+        goto done;
+    }
+
+    return EOK;
+
+done:
+    /* send reply back immediately */
+    sbus_conn_send_reply(conn, reply);
+    dbus_message_unref(reply);
+
+    talloc_free(be_req);
+
+    return EOK;
+}
+
 static int be_client_destructor(void *ctx)
 {
     struct be_client *becli = talloc_get_type(ctx, struct be_client);
@@ -603,6 +694,9 @@ static int be_client_destructor(void *ctx)
         } else if (becli->bectx->pam_cli == becli) {
             DEBUG(4, ("Removed PAM client\n"));
             becli->bectx->pam_cli = NULL;
+        } else if (becli->bectx->sudo_cli == becli) {
+            DEBUG(4, ("Removed SUDO client\n"));
+            becli->bectx->sudo_cli = NULL;
         } else {
             DEBUG(2, ("Unknown client removed ...\n"));
         }
@@ -651,6 +745,8 @@ static int client_registration(DBusMessage *message,
         becli->bectx->nss_cli = becli;
     } else if (strcasecmp(cli_name, "PAM") == 0) {
         becli->bectx->pam_cli = becli;
+    } else if (strcasecmp(cli_name, "SUDO") == 0) {
+        becli->bectx->sudo_cli = becli;
     } else {
         DEBUG(1, ("Unknown client! [%s]\n", cli_name));
     }
@@ -1166,6 +1262,21 @@ int be_process_init(TALLOC_CTX *mem_ctx,
     } else {
         DEBUG(9, ("CHPASS backend target successfully loaded "
                   "from provider [%s].\n", ctx->bet_info[BET_CHPASS].mod_name));
+    }
+
+    ret = load_backend_module(ctx, BET_SUDO,
+                              &ctx->bet_info[BET_SUDO],
+                              ctx->bet_info[BET_SUDO].mod_name);
+    if (ret != EOK) {
+        if (ret != ENOENT) {
+            DEBUG(0, ("fatal error initializing data providers\n"));
+            return ret;
+        }
+        DEBUG(1, ("No SUDO module provided for [%s] !!\n",
+                  be_domain));
+    } else {
+        DEBUG(9, ("SUDO backend target successfully loaded "
+                  "from provider [%s].\n", ctx->bet_info[BET_SUDO].mod_name));
     }
 
     /* Handle SIGUSR1 to force offline behavior */

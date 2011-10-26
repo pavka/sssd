@@ -48,6 +48,7 @@ enum bet_type {
     BET_AUTH,
     BET_ACCESS,
     BET_CHPASS,
+    BET_SUDO,
     BET_MAX
 };
 
@@ -108,6 +109,7 @@ struct be_ctx {
 
     struct be_client *nss_cli;
     struct be_client *pam_cli;
+    struct be_client *sudo_cli;
 
     struct loaded_be loaded_be[BET_MAX];
     struct bet_info bet_info[BET_MAX];
