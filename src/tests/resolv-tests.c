@@ -151,6 +151,7 @@ START_TEST(test_copy_hostent)
     talloc_free(rhe);
 
     check_leaks_pop(ctx);
+    talloc_free(ctx);
 }
 END_TEST
 

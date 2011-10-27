@@ -106,4 +106,5 @@ leak_check_teardown(void)
         fail("Exiting with a non-empty stack");
     }
     check_leaks(global_talloc_context, 0);
+    talloc_free(global_talloc_context);
 }

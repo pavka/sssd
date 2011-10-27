@@ -2067,14 +2067,24 @@ int main(int argc, const char *argv[])
     if (!debug_log_file) return 2;
 
     srv_name = talloc_asprintf(NULL, "sssd[be[%s]]", be_domain);
-    if (!srv_name) return 2;
+    if (!srv_name) {
+        talloc_free(debug_log_file);
+        return 2;
+    }
 
     confdb_path = talloc_asprintf(NULL, CONFDB_DOMAIN_PATH_TMPL, be_domain);
-    if (!confdb_path) return 2;
+    if (!confdb_path) {
+        talloc_free(debug_log_file);
+        talloc_free(srv_name);
+        return 2;
+    }
 
     ret = server_setup(srv_name, 0, confdb_path, &main_ctx);
     if (ret != EOK) {
         DEBUG(0, ("Could not set up mainloop [%d]\n", ret));
+        talloc_free(debug_log_file);
+        talloc_free(srv_name);
+        talloc_free(confdb_path);
         return 2;
     }
 
@@ -2090,6 +2100,9 @@ int main(int argc, const char *argv[])
                           main_ctx->confdb_ctx);
     if (ret != EOK) {
         DEBUG(0, ("Could not initialize backend [%d]\n", ret));
+        talloc_free(debug_log_file);
+        talloc_free(srv_name);
+        talloc_free(confdb_path);
         return 3;
     }
 
@@ -2098,6 +2111,9 @@ int main(int argc, const char *argv[])
     /* loop on main */
     server_loop(main_ctx);
 
+    talloc_free(debug_log_file);
+    talloc_free(srv_name);
+    talloc_free(confdb_path);
     return 0;
 }
 
