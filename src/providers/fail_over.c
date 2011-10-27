@@ -942,6 +942,7 @@ fo_resolve_service_done(struct tevent_req *subreq)
     } else {
         set_server_common_status(common, SERVER_NAME_RESOLVED);
     }
+    talloc_report_full(state->server->common, stderr);
 
     /* Take care of all requests for this server. */
     while ((request = common->request_list) != NULL) {
