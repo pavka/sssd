@@ -1922,10 +1922,22 @@ static int sysdb_domain_init_internal(TALLOC_CTX *mem_ctx,
                  * any changes made above take effect.
                  */
                 talloc_zfree(ctx->ldb);
-                ret = sysdb_ldb_connect(ctx, ctx->ldb_file, &ctx->ldb);
-                if (ret != EOK) {
-                    DEBUG(1, ("sysdb_ldb_connect failed.\n"));
+
+                ctx->ldb = ldb_init(ctx, NULL);
+                if (!ctx->ldb) {
+                    return EIO;
                 }
+
+                ret = ldb_set_debug(ctx->ldb, ldb_debug_messages, NULL);
+                if (ret != LDB_SUCCESS) {
+                    return EIO;
+                }
+
+                ret = ldb_connect(ctx->ldb, ctx->ldb_file, 0, NULL);
+                if (ret != LDB_SUCCESS) {
+                    return EIO;
+                }
+
                 goto done;
             }
         }
