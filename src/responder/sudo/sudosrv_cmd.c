@@ -23,9 +23,12 @@
 #include <sudo_plugin.h>
 
 #include "util/util.h"
+#include "confdb/confdb.h"
 #include "responder/common/responder.h"
 #include "responder/common/responder_packet.h"
+#include "responder/sudo/sudosrv.h"
 #include "sss_client/sudo_plugin/sss_sudoplugin.h"
+#include "sss_client/sss_cli.h"
 
 static int sudo_cmd_check_response(struct cli_ctx *cctx,
                                    int return_code,
@@ -250,6 +253,10 @@ static int sudo_cmd_check(struct cli_ctx *cctx) {
             return ENOMEM;
         }
     }
+
+    /* contact DP */
+    ret = sudo_dp_refresh_send(cctx, cctx->rctx->domains->name,
+                               SSS_CLI_SOCKET_TIMEOUT/2);
 
     /* send response */
     sudo_cmd_check_response(cctx, sudo_result, argc_in, argv_in,
