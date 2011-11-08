@@ -387,7 +387,49 @@ done:
 }
 
 
-/* =Search-Group-by-Name============================================ */
+/* =Search-Sudocmd================================================= */
+
+int sysdb_search_sudocmd(TALLOC_CTX *mem_ctx,
+                         struct sysdb_ctx *sysdb,
+                         const char *command,
+                         const char **attrs,
+                         struct ldb_message **msg)
+{
+    TALLOC_CTX *tmp_ctx;
+    static const char *def_attrs[] = { SYSDB_NAME, NULL };
+    struct ldb_message **msgs = NULL;
+    struct ldb_dn *basedn;
+    size_t msgs_count = 0;
+    int ret;
+
+    tmp_ctx = talloc_new(NULL);
+    if (!tmp_ctx) {
+        return ENOMEM;
+    }
+
+    basedn = sysdb_sudocmd_dn(sysdb, tmp_ctx, sysdb->domain->name, command);
+    if (!basedn) {
+        ret = ENOMEM;
+        goto done;
+    }
+
+    ret = sysdb_search_entry(tmp_ctx, sysdb, basedn, LDB_SCOPE_BASE, NULL,
+                             attrs?attrs:def_attrs, &msgs_count, &msgs);
+    if (ret) {
+        goto done;
+    }
+
+    *msg = talloc_steal(mem_ctx, msgs[0]);
+
+done:
+    if (ret) {
+        DEBUG(SSSDBG_OP_FAILURE, ("Error: %d (%s)\n", ret, strerror(ret)));
+    }
+    talloc_zfree(tmp_ctx);
+    return ret;
+}
+
+/* =Search-Netgroup-by-Name========================================= */
 
 int sysdb_search_netgroup_by_name(TALLOC_CTX *mem_ctx,
                                   struct sysdb_ctx *sysdb,
@@ -568,6 +610,35 @@ int sysdb_set_netgroup_attr(struct sysdb_ctx *sysdb,
     }
 
     dn = sysdb_netgroup_dn(sysdb, tmp_ctx, sysdb->domain->name, name);
+    if (!dn) {
+        ret = ENOMEM;
+        goto done;
+    }
+
+    ret = sysdb_set_entry_attr(sysdb, dn, attrs, mod_op);
+
+done:
+    talloc_free(tmp_ctx);
+    return ret;
+}
+
+/* =Replace-Attributes-On-Sudo-Command======================================= */
+
+int sysdb_set_sudocmd_attr(struct sysdb_ctx *sysdb,
+                           const char *command,
+                           struct sysdb_attrs *attrs,
+                           int mod_op)
+{
+    errno_t ret;
+    struct ldb_dn *dn;
+    TALLOC_CTX *tmp_ctx;
+
+    tmp_ctx = talloc_new(NULL);
+    if (!tmp_ctx) {
+        return ENOMEM;
+    }
+
+    dn = sysdb_sudocmd_dn(sysdb, tmp_ctx, sysdb->domain->name, command);
     if (!dn) {
         ret = ENOMEM;
         goto done;
@@ -1401,6 +1472,111 @@ int sysdb_add_netgroup(struct sysdb_ctx *sysdb,
     if (ret) goto done;
 
     ret = sysdb_set_netgroup_attr(sysdb, name, attrs, SYSDB_MOD_REP);
+
+done:
+    if (ret == EOK) {
+        ret = ldb_transaction_commit(sysdb->ldb);
+        ret = sysdb_error_to_errno(ret);
+    }
+
+    if (ret != EOK) {
+        DEBUG(6, ("Error: %d (%s)\n", ret, strerror(ret)));
+        ldb_transaction_cancel(sysdb->ldb);
+    }
+    talloc_zfree(tmp_ctx);
+    return ret;
+}
+
+/* =Add-Basic-Sudo-Command-NO-CHECKS============================================= */
+
+int sysdb_add_basic_sudocmd(struct sysdb_ctx *sysdb,
+                            const char *command)
+{
+    struct ldb_message *msg;
+    int ret;
+
+    msg = ldb_msg_new(NULL);
+    if (!msg) {
+        return ENOMEM;
+    }
+
+    /* sudo command dn */
+    msg->dn = sysdb_sudocmd_dn(sysdb, msg, sysdb->domain->name, command);
+    if (!msg->dn) {
+        ERROR_OUT(ret, ENOMEM, done);
+    }
+
+    ret = add_string(msg, LDB_FLAG_MOD_ADD,
+                     SYSDB_OBJECTCLASS, SYSDB_SUDOCOMMAND_CLASS);
+    if (ret) goto done;
+
+    ret = add_string(msg, LDB_FLAG_MOD_ADD, SYSDB_NAME, command);
+    if (ret) goto done;
+
+    /* creation time */
+    ret = add_ulong(msg, LDB_FLAG_MOD_ADD, SYSDB_CREATE_TIME,
+                    (unsigned long) time(NULL));
+    if (ret) goto done;
+
+    ret = ldb_add(sysdb->ldb, msg);
+    ret = sysdb_error_to_errno(ret);
+
+done:
+    if (ret) {
+        DEBUG(SSSDBG_OP_FAILURE, ("Error: %d (%s)\n", ret, strerror(ret)));
+    }
+    talloc_zfree(msg);
+    return ret;
+}
+
+/* FIXME - cache timeout and thus now might not be needed, we might want to just
+ * always rewrite sudo rules */
+int sysdb_add_sudocmd(struct sysdb_ctx *sysdb,
+                      const char *command,
+                      struct sysdb_attrs *attrs,
+                      int cache_timeout,
+                      time_t now)
+{
+    TALLOC_CTX *tmp_ctx;
+    int ret;
+
+    tmp_ctx = talloc_new(NULL);
+    if (!tmp_ctx) {
+        return ENOMEM;
+    }
+
+    ret = ldb_transaction_start(sysdb->ldb);
+    if (ret) {
+        ret = sysdb_error_to_errno(ret);
+        talloc_free(tmp_ctx);
+        return ret;
+    }
+
+    /* try to add the sudo command */
+    ret = sysdb_add_basic_sudocmd(sysdb, command);
+    if (ret && ret != EEXIST) goto done;
+
+    if (!attrs) {
+        attrs = sysdb_new_attrs(tmp_ctx);
+        if (!attrs) {
+            ret = ENOMEM;
+            goto done;
+        }
+    }
+
+    if (!now) {
+        now = time(NULL);
+    }
+
+    ret = sysdb_attrs_add_time_t(attrs, SYSDB_LAST_UPDATE, now);
+    if (ret) goto done;
+
+    ret = sysdb_attrs_add_time_t(attrs, SYSDB_CACHE_EXPIRE,
+                                 ((cache_timeout) ?
+                                  (now + cache_timeout) : 0));
+    if (ret) goto done;
+
+    ret = sysdb_set_sudocmd_attr(sysdb, command, attrs, SYSDB_MOD_REP);
 
 done:
     if (ret == EOK) {
@@ -2425,6 +2601,49 @@ done:
     talloc_free(tmp_ctx);
     return ret;
 }
+
+/* =Delete-Sudocmd-================================================ */
+
+/* Do we need this? Or shall we delete the whole tree recursively? */
+int sysdb_delete_sudocmd(struct sysdb_ctx *sysdb,
+                         const char *command)
+{
+    TALLOC_CTX *tmp_ctx;
+    struct ldb_message *msg;
+    int ret;
+
+    if (!command) return EINVAL;
+
+    tmp_ctx = talloc_new(NULL);
+    if (!tmp_ctx) {
+        return ENOMEM;
+    }
+
+    ret = sysdb_search_sudocmd(tmp_ctx, sysdb,
+                               command, NULL, &msg);
+    if (ret != EOK && ret != ENOENT) {
+        DEBUG(SSSDBG_OP_FAILURE,
+              ("sysdb_search_sudocmd failed: %d (%s)\n",
+              ret, strerror(ret)));
+        goto done;
+    } else if (ret == ENOENT) {
+        DEBUG(SSSDBG_TRACE_FUNC, ("sudo command does not exist, nothing to delete\n"));
+        goto done;
+    }
+
+    ret = sysdb_delete_entry(sysdb, msg->dn, false);
+    if (ret != EOK) {
+        goto done;
+    }
+
+done:
+    if (ret != EOK) {
+        DEBUG(SSSDBG_OP_FAILURE, ("Error: %d (%s)\n", ret, strerror(ret)));
+    }
+    talloc_free(tmp_ctx);
+    return ret;
+}
+
 
 /* ========= Authentication against cached password ============ */
 

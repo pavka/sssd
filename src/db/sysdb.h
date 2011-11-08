@@ -36,14 +36,18 @@
 #define SYSDB_GROUPS_CONTAINER "cn=groups"
 #define SYSDB_CUSTOM_CONTAINER "cn=custom"
 #define SYSDB_NETGROUP_CONTAINER "cn=Netgroups"
+#define SYSDB_SUDO_CONTAINER "cn=sudo"
+#define SYSDB_SUDOCMDS_CONTAINER "cn=sudocmds,"SYSDB_SUDO_CONTAINER
 #define SYSDB_TMPL_USER_BASE SYSDB_USERS_CONTAINER",cn=%s,"SYSDB_BASE
 #define SYSDB_TMPL_GROUP_BASE SYSDB_GROUPS_CONTAINER",cn=%s,"SYSDB_BASE
 #define SYSDB_TMPL_CUSTOM_BASE SYSDB_CUSTOM_CONTAINER",cn=%s,"SYSDB_BASE
 #define SYSDB_TMPL_NETGROUP_BASE SYSDB_NETGROUP_CONTAINER",cn=%s,"SYSDB_BASE
+#define SYSDB_TMPL_SUDOCMD_BASE SYSDB_SUDOCMDS_CONTAINER",cn=%s,"SYSDB_BASE
 
 #define SYSDB_USER_CLASS "user"
 #define SYSDB_GROUP_CLASS "group"
 #define SYSDB_NETGROUP_CLASS "netgroup"
+#define SYSDB_SUDOCOMMAND_CLASS "sudoCommand"
 
 #define SYSDB_NAME "name"
 #define SYSDB_NAME_ALIAS "nameAlias"
@@ -163,6 +167,7 @@
 #define SYSDB_TMPL_USER SYSDB_NAME"=%s,"SYSDB_TMPL_USER_BASE
 #define SYSDB_TMPL_GROUP SYSDB_NAME"=%s,"SYSDB_TMPL_GROUP_BASE
 #define SYSDB_TMPL_NETGROUP SYSDB_NAME"=%s,"SYSDB_TMPL_NETGROUP_BASE
+#define SYSDB_TMPL_SUDOCMD SYSDB_NAME"=%s,"SYSDB_TMPL_SUDOCMD_BASE
 #define SYSDB_TMPL_CUSTOM_SUBTREE "cn=%s,"SYSDB_TMPL_CUSTOM_BASE
 #define SYSDB_TMPL_CUSTOM SYSDB_NAME"=%s,cn=%s,"SYSDB_TMPL_CUSTOM_BASE
 
@@ -255,6 +260,8 @@ struct ldb_dn *sysdb_netgroup_dn(struct sysdb_ctx *sysdb, void *mem_ctx,
                                  const char *domain, const char *name);
 struct ldb_dn *sysdb_netgroup_base_dn(struct sysdb_ctx *sysdb, void *mem_ctx,
                                       const char *domain);
+struct ldb_dn *sysdb_sudocmd_dn(struct sysdb_ctx *sysdb, TALLOC_CTX *mem_ctx,
+                                const char *domain, const char *command);
 errno_t sysdb_group_dn_name(struct sysdb_ctx *sysdb, void *mem_ctx,
                             const char *dn_str, char **name);
 struct ldb_dn *sysdb_domain_dn(struct sysdb_ctx *sysdb, void *mem_ctx,
@@ -429,6 +436,13 @@ int sysdb_search_netgroup_by_name(TALLOC_CTX *mem_ctx,
                                   const char **attrs,
                                   struct ldb_message **msg);
 
+/* Search sudo command (by command) */
+int sysdb_search_sudocmd(TALLOC_CTX *mem_ctx,
+                         struct sysdb_ctx *sysdb,
+                         const char *command,
+                         const char **attrs,
+                         struct ldb_message **msg);
+
 /* Replace entry attrs */
 int sysdb_set_entry_attr(struct sysdb_ctx *sysdb,
                          struct ldb_dn *entry_dn,
@@ -452,6 +466,12 @@ int sysdb_set_netgroup_attr(struct sysdb_ctx *sysdb,
                             const char *name,
                             struct sysdb_attrs *attrs,
                             int mod_op);
+
+/* Replace sudo command attrs */
+int sysdb_set_sudocmd_attr(struct sysdb_ctx *sysdb,
+                           const char *command,
+                           struct sysdb_attrs *attrs,
+                           int mod_op);
 
 /* Allocate a new id */
 int sysdb_get_new_id(struct sysdb_ctx *sysdb,
@@ -508,6 +528,16 @@ int sysdb_add_netgroup(struct sysdb_ctx *sysdb,
                        struct sysdb_attrs *attrs,
                        int cache_timeout,
                        time_t now);
+
+/* Add sudo command (only basic attrs and w/o checks) */
+int sysdb_add_basic_sudocmd(struct sysdb_ctx *sysdb,
+                            const char *command);
+
+int sysdb_add_sudocmd(struct sysdb_ctx *sysdb,
+                      const char *command,
+                      struct sysdb_attrs *attrs,
+                      int cache_timeout,
+                      time_t now);
 
 /* mod_op must be either LDB_FLAG_MOD_ADD or LDB_FLAG_MOD_DELETE */
 int sysdb_mod_group_member(struct sysdb_ctx *sysdb,
@@ -672,6 +702,9 @@ int sysdb_search_netgroups(TALLOC_CTX *mem_ctx,
 
 int sysdb_delete_netgroup(struct sysdb_ctx *sysdb,
                           const char *name);
+
+int sysdb_delete_sudocmd(struct sysdb_ctx *sysdb,
+                         const char *command);
 
 errno_t sysdb_attrs_to_list(TALLOC_CTX *mem_ctx,
                             struct sysdb_attrs **attrs,

@@ -214,6 +214,25 @@ struct ldb_dn *sysdb_netgroup_base_dn(struct sysdb_ctx *sysdb, TALLOC_CTX *mem_c
     return ldb_dn_new_fmt(mem_ctx, sysdb->ldb, SYSDB_TMPL_NETGROUP_BASE, domain);
 }
 
+struct ldb_dn *sysdb_sudocmd_dn(struct sysdb_ctx *sysdb, TALLOC_CTX *mem_ctx,
+                                const char *domain, const char *command)
+{
+    errno_t ret;
+    char *clean_command;
+    struct ldb_dn *dn;
+
+    ret = sysdb_dn_sanitize(NULL, command, &clean_command);
+    if (ret != EOK) {
+        return NULL;
+    }
+
+    dn = ldb_dn_new_fmt(mem_ctx, sysdb->ldb, SYSDB_TMPL_SUDOCMD,
+                        clean_command, domain);
+    talloc_free(clean_command);
+
+    return dn;
+}
+
 errno_t sysdb_get_rdn(struct sysdb_ctx *sysdb, TALLOC_CTX *mem_ctx,
                       const char *_dn, char **_name, char **_val)
 {

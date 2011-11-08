@@ -166,6 +166,7 @@ struct test_data {
     const char *username;
     const char *groupname;
     const char *netgrname;
+    const char *sudocmdname;
     uid_t uid;
     gid_t gid;
     const char *shell;
@@ -477,6 +478,24 @@ static int test_set_netgroup_attr(struct test_data *data)
     ret = sysdb_set_netgroup_attr(data->ctx->sysdb,
                                   data->netgrname, attrs, SYSDB_MOD_REP);
     return ret;
+}
+
+static int test_add_basic_sudocmd(struct test_data *data)
+{
+    return sysdb_add_basic_sudocmd(data->ctx->sysdb,
+                                   data->sudocmdname);
+}
+
+static int test_add_sudocmd(struct test_data *data)
+{
+    return sysdb_add_sudocmd(data->ctx->sysdb,
+                             data->sudocmdname,
+                             NULL, 30, 0);
+}
+
+static int test_remove_sudocmd(struct test_data *data)
+{
+    return sysdb_delete_sudocmd(data->ctx->sysdb, data->sudocmdname);
 }
 
 START_TEST (test_sysdb_store_user)
@@ -2675,6 +2694,112 @@ START_TEST(test_sysdb_remove_netgroup_member)
 }
 END_TEST
 
+START_TEST (test_sysdb_add_basic_sudocmd)
+{
+    struct sysdb_test_ctx *test_ctx;
+    struct test_data *data;
+    int ret;
+
+    /* Setup */
+    ret = setup_sysdb_tests(&test_ctx);
+    if (ret != EOK) {
+        fail("Could not set up the test");
+        return;
+    }
+
+    data = talloc_zero(test_ctx, struct test_data);
+    data->ctx = test_ctx;
+    data->ev = test_ctx->ev;
+    data->uid = _i;         /* This is kinda abuse of uid, though */
+    data->sudocmdname = talloc_asprintf(data, "testsudocmd%d", _i);
+
+    ret = test_add_basic_sudocmd(data);
+
+    fail_if(ret != EOK, "Could not add sudo command %s", data->sudocmdname);
+    talloc_free(test_ctx);
+}
+END_TEST
+
+START_TEST (test_sysdb_add_sudocmd)
+{
+    struct sysdb_test_ctx *test_ctx;
+    struct test_data *data;
+    int ret;
+
+    /* Setup */
+    ret = setup_sysdb_tests(&test_ctx);
+    if (ret != EOK) {
+        fail("Could not set up the test");
+        return;
+    }
+
+    data = talloc_zero(test_ctx, struct test_data);
+    data->ctx = test_ctx;
+    data->ev = test_ctx->ev;
+    data->uid = _i;         /* This is kinda abuse of uid, though */
+    data->sudocmdname = talloc_asprintf(data, "testsudocmd%d", _i);
+
+    ret = test_add_sudocmd(data);
+    fail_if(ret != EOK, "Could not add sudo command %s", data->sudocmdname);
+    talloc_free(test_ctx);
+}
+END_TEST
+
+START_TEST (test_sysdb_search_sudocmd)
+{
+    struct sysdb_test_ctx *test_ctx;
+    struct test_data *data;
+    int ret;
+    const char *sudocmdname;
+    struct ldb_message *msg;
+    struct ldb_dn *sudocmddn;
+
+    /* Setup */
+    ret = setup_sysdb_tests(&test_ctx);
+    if (ret != EOK) {
+        fail("Could not set up the test");
+        return;
+    }
+
+    sudocmdname = talloc_asprintf(test_ctx, "testsudocmd%d", _i);
+
+    ret = sysdb_search_sudocmd(test_ctx, test_ctx->sysdb,
+                               sudocmdname, NULL, &msg);
+    fail_if(ret != EOK, "Could not find sudo command with name %s", sudocmdname);
+
+    sudocmddn = sysdb_sudocmd_dn(test_ctx->sysdb, test_ctx,
+                                 test_ctx->domain->name, sudocmdname);
+    fail_if(sudocmddn == NULL);
+    fail_if(ldb_dn_compare(msg->dn, sudocmddn) != 0, "Found wrong sudo command!\n");
+    talloc_free(test_ctx);
+}
+END_TEST
+
+START_TEST (test_sysdb_delete_sudocmd)
+{
+    struct sysdb_test_ctx *test_ctx;
+    struct test_data *data;
+    int ret;
+
+    /* Setup */
+    ret = setup_sysdb_tests(&test_ctx);
+    if (ret != EOK) {
+        fail("Could not set up the test");
+        return;
+    }
+
+    data = talloc_zero(test_ctx, struct test_data);
+    data->ctx = test_ctx;
+    data->ev = test_ctx->ev;
+    data->sudocmdname = talloc_asprintf(data, "testsudocmd%d", _i);
+
+    ret = test_remove_sudocmd(data);
+
+    fail_if(ret != EOK, "Could not remove sudo command with name %s", data->sudocmdname);
+    talloc_free(test_ctx);
+}
+END_TEST
+
 START_TEST(test_odd_characters)
 {
     errno_t ret;
@@ -3051,6 +3176,12 @@ Suite *create_sysdb_suite(void)
 
     /* Remove the other half by DN */
     tcase_add_loop_test(tc_sysdb, test_sysdb_remove_netgroup_entry, 27005, 27010);
+
+/* ===== SUDO TESTS ===== */
+    tcase_add_loop_test(tc_sysdb, test_sysdb_add_basic_sudocmd, 27010, 27015);
+    tcase_add_loop_test(tc_sysdb, test_sysdb_add_sudocmd, 27015, 27020);
+    tcase_add_loop_test(tc_sysdb, test_sysdb_search_sudocmd, 27010, 27020);
+    tcase_add_loop_test(tc_sysdb, test_sysdb_delete_sudocmd, 27010, 27020);
 
 /* Add all test cases to the test suite */
     suite_add_tcase(s, tc_sysdb);
