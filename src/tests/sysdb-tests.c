@@ -167,6 +167,7 @@ struct test_data {
     const char *groupname;
     const char *netgrname;
     const char *sudocmdname;
+    const char *sudorulename;
     uid_t uid;
     gid_t gid;
     const char *shell;
@@ -496,6 +497,79 @@ static int test_add_sudocmd(struct test_data *data)
 static int test_remove_sudocmd(struct test_data *data)
 {
     return sysdb_delete_sudocmd(data->ctx->sysdb, data->sudocmdname);
+}
+
+static int test_add_basic_sudorule(struct test_data *data)
+{
+    return sysdb_add_basic_sudorule(data->ctx->sysdb,
+                                    data->sudorulename);
+}
+
+static int test_add_sudorule(struct test_data *data)
+{
+    return sysdb_add_sudorule(data->ctx->sysdb,
+                              data->sudorulename,
+                              NULL, 30, 0);
+}
+
+static int test_sudorule_add_members(struct test_data *data)
+{
+    int ret;
+
+    ret = sysdb_add_sudorule_member(data->ctx->sysdb,
+                                    data->sudorulename,
+                                    SYSDB_SUDORULE_MEMBER_USER,
+                                    data->username);
+    if (ret != EOK) return ret;
+
+    ret = sysdb_add_sudorule_member(data->ctx->sysdb,
+                                    data->sudorulename,
+                                    SYSDB_SUDORULE_MEMBER_GROUP,
+                                    data->groupname);
+    if (ret != EOK) return ret;
+
+    ret = sysdb_add_sudorule_member(data->ctx->sysdb,
+                                    data->sudorulename,
+                                    SYSDB_SUDORULE_MEMBER_COMMAND,
+                                    data->sudocmdname);
+    if (ret != EOK) return ret;
+
+    return EOK;
+}
+
+static int test_sudorule_check_members(struct test_data *data)
+{
+    int ret;
+    const char *filter;
+    size_t count;
+    struct ldb_message **msgs;
+    struct ldb_message_element *el = NULL;
+    const char *attrs[] = { SYSDB_NAME,
+                            SYSDB_MEMBER,
+                            NULL };
+    const int expected = 3;
+    int nmembers = 0;
+    int i;
+
+    filter = talloc_asprintf(data, "(%s=%s)", SYSDB_NAME, data->sudorulename);
+    if (!filter) return ENOMEM;
+
+    /* XXX - misto toho custom */
+    ret = sysdb_search_sudorule(data, data->ctx->sysdb, filter,
+                                attrs, &count, &msgs);
+    fail_if(ret != EOK, "Sudorules search failed\n");
+    fail_if(count != 1, "More sudo rules by that name?\n");
+
+    el = ldb_msg_find_element(msgs[0], SYSDB_MEMBER);
+    if (el && el->num_values) {
+        nmembers = el->num_values;
+    }
+
+    fail_unless(nmembers == expected,
+                "Expected %d members got %d\n",
+                expected, expected);
+
+    return EOK;
 }
 
 START_TEST (test_sysdb_store_user)
@@ -2800,6 +2874,90 @@ START_TEST (test_sysdb_delete_sudocmd)
 }
 END_TEST
 
+START_TEST (test_sysdb_add_basic_sudorule)
+{
+    struct sysdb_test_ctx *test_ctx;
+    struct test_data *data;
+    int ret;
+
+    /* Setup */
+    ret = setup_sysdb_tests(&test_ctx);
+    if (ret != EOK) {
+        fail("Could not set up the test");
+        return;
+    }
+
+    data = talloc_zero(test_ctx, struct test_data);
+    data->ctx = test_ctx;
+    data->ev = test_ctx->ev;
+    data->uid = _i;         /* This is kinda abuse of uid, though */
+    data->sudorulename = talloc_asprintf(data, "testsudorule%d", _i);
+
+    ret = test_add_basic_sudorule(data);
+    fail_if(ret != EOK, "Could not add sudo rule %s", data->sudorulename);
+    talloc_free(test_ctx);
+}
+END_TEST
+
+START_TEST (test_sysdb_add_sudorule)
+{
+    struct sysdb_test_ctx *test_ctx;
+    struct test_data *data;
+    int ret;
+
+    /* Setup */
+    ret = setup_sysdb_tests(&test_ctx);
+    if (ret != EOK) {
+        fail("Could not set up the test");
+        return;
+    }
+
+    data = talloc_zero(test_ctx, struct test_data);
+    data->ctx = test_ctx;
+    data->ev = test_ctx->ev;
+    data->uid = _i;         /* This is kinda abuse of uid, though */
+    data->sudorulename = talloc_asprintf(data, "testsudorule%d", _i);
+
+    ret = test_add_sudorule(data);
+    fail_if(ret != EOK, "Could not add sudo rule %s", data->sudorulename);
+    talloc_free(test_ctx);
+}
+END_TEST
+
+START_TEST (test_sysdb_sudorule_add_members)
+{
+    struct sysdb_test_ctx *test_ctx;
+    struct test_data *data;
+    int ret;
+
+    /* Setup */
+    ret = setup_sysdb_tests(&test_ctx);
+    if (ret != EOK) {
+        fail("Could not set up the test");
+        return;
+    }
+
+    data = talloc_zero(test_ctx, struct test_data);
+    data->ctx = test_ctx;
+    data->ev = test_ctx->ev;
+    data->uid = _i;         /* This is kinda abuse of uid, though */
+    data->sudorulename = talloc_asprintf(data, "testsudorule%d", _i);
+    data->username = talloc_asprintf(data, "testuser%d", _i);
+    data->groupname = talloc_asprintf(data, "testgroup%d", _i+1000);
+    data->sudocmdname = talloc_asprintf(data, "testsudocmd%d", _i);
+
+    ret = test_sudorule_add_members(data);
+    fail_if(ret != EOK, "Could not add members to sudo rule %s",
+            data->sudorulename);
+
+    ret = test_sudorule_check_members(data);
+    fail_if(ret != EOK, "Incorrect members for sudo rule %s",
+            data->sudorulename);
+
+    talloc_free(test_ctx);
+}
+END_TEST
+
 START_TEST(test_odd_characters)
 {
     errno_t ret;
@@ -3105,12 +3263,6 @@ Suite *create_sysdb_suite(void)
     /* Remove the members from the groups */
     tcase_add_loop_test(tc_sysdb, test_sysdb_remove_group_member, 28010, 28020);
 
-    /* Remove the users by name */
-    tcase_add_loop_test(tc_sysdb, test_sysdb_remove_local_user, 27010, 27020);
-
-    /* Remove the groups by name */
-    tcase_add_loop_test(tc_sysdb, test_sysdb_remove_local_group, 28010, 28020);
-
     /* test the ignore_not_found parameter for users */
     tcase_add_test(tc_sysdb, test_sysdb_remove_nonexistent_user);
 
@@ -3181,7 +3333,21 @@ Suite *create_sysdb_suite(void)
     tcase_add_loop_test(tc_sysdb, test_sysdb_add_basic_sudocmd, 27010, 27015);
     tcase_add_loop_test(tc_sysdb, test_sysdb_add_sudocmd, 27015, 27020);
     tcase_add_loop_test(tc_sysdb, test_sysdb_search_sudocmd, 27010, 27020);
+
+    tcase_add_loop_test(tc_sysdb, test_sysdb_add_user,27010,27020);
+    tcase_add_loop_test(tc_sysdb, test_sysdb_add_group, 28010, 28020);
+    tcase_add_loop_test(tc_sysdb, test_sysdb_add_basic_sudorule, 27010, 27015);
+    tcase_add_loop_test(tc_sysdb, test_sysdb_add_sudorule, 27015, 27020);
+    tcase_add_loop_test(tc_sysdb, test_sysdb_sudorule_add_members, 27010, 27020);
+
     tcase_add_loop_test(tc_sysdb, test_sysdb_delete_sudocmd, 27010, 27020);
+
+/* ===== Cleanup ===== */
+    /* Remove the users by name */
+    tcase_add_loop_test(tc_sysdb, test_sysdb_remove_local_user, 27010, 27020);
+
+    /* Remove the groups by name */
+    tcase_add_loop_test(tc_sysdb, test_sysdb_remove_local_group, 28010, 28020);
 
 /* Add all test cases to the test suite */
     suite_add_tcase(s, tc_sysdb);

@@ -233,6 +233,25 @@ struct ldb_dn *sysdb_sudocmd_dn(struct sysdb_ctx *sysdb, TALLOC_CTX *mem_ctx,
     return dn;
 }
 
+struct ldb_dn *sysdb_sudorule_dn(struct sysdb_ctx *sysdb, TALLOC_CTX *mem_ctx,
+                                 const char *domain, const char *rule)
+{
+    errno_t ret;
+    char *clean_rule;
+    struct ldb_dn *dn;
+
+    ret = sysdb_dn_sanitize(NULL, rule, &clean_rule);
+    if (ret != EOK) {
+        return NULL;
+    }
+
+    dn = ldb_dn_new_fmt(mem_ctx, sysdb->ldb, SYSDB_TMPL_SUDORULE,
+                        clean_rule, domain);
+    talloc_free(clean_rule);
+
+    return dn;
+}
+
 errno_t sysdb_get_rdn(struct sysdb_ctx *sysdb, TALLOC_CTX *mem_ctx,
                       const char *_dn, char **_name, char **_val)
 {

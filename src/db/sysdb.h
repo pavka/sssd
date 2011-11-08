@@ -38,16 +38,19 @@
 #define SYSDB_NETGROUP_CONTAINER "cn=Netgroups"
 #define SYSDB_SUDO_CONTAINER "cn=sudo"
 #define SYSDB_SUDOCMDS_CONTAINER "cn=sudocmds,"SYSDB_SUDO_CONTAINER
+#define SYSDB_SUDORULES_CONTAINER "cn=sudorules,"SYSDB_SUDO_CONTAINER
 #define SYSDB_TMPL_USER_BASE SYSDB_USERS_CONTAINER",cn=%s,"SYSDB_BASE
 #define SYSDB_TMPL_GROUP_BASE SYSDB_GROUPS_CONTAINER",cn=%s,"SYSDB_BASE
 #define SYSDB_TMPL_CUSTOM_BASE SYSDB_CUSTOM_CONTAINER",cn=%s,"SYSDB_BASE
 #define SYSDB_TMPL_NETGROUP_BASE SYSDB_NETGROUP_CONTAINER",cn=%s,"SYSDB_BASE
 #define SYSDB_TMPL_SUDOCMD_BASE SYSDB_SUDOCMDS_CONTAINER",cn=%s,"SYSDB_BASE
+#define SYSDB_TMPL_SUDORULE_BASE SYSDB_SUDORULES_CONTAINER",cn=%s,"SYSDB_BASE
 
 #define SYSDB_USER_CLASS "user"
 #define SYSDB_GROUP_CLASS "group"
 #define SYSDB_NETGROUP_CLASS "netgroup"
 #define SYSDB_SUDOCOMMAND_CLASS "sudoCommand"
+#define SYSDB_SUDORULE_CLASS "sudoRule"
 
 #define SYSDB_NAME "name"
 #define SYSDB_NAME_ALIAS "nameAlias"
@@ -110,6 +113,7 @@
 #define SYSDB_UC "objectclass="SYSDB_USER_CLASS
 #define SYSDB_GC "objectclass="SYSDB_GROUP_CLASS
 #define SYSDB_NC "objectclass="SYSDB_NETGROUP_CLASS
+#define SYSDB_SUDORULEC "objectclass="SYSDB_SUDORULE_CLASS
 #define SYSDB_MPGC "|("SYSDB_UC")("SYSDB_GC")"
 
 #define SYSDB_PWNAM_FILTER "(&("SYSDB_UC")(|("SYSDB_NAME_ALIAS"=%s)("SYSDB_NAME"=%s)))"
@@ -168,6 +172,7 @@
 #define SYSDB_TMPL_GROUP SYSDB_NAME"=%s,"SYSDB_TMPL_GROUP_BASE
 #define SYSDB_TMPL_NETGROUP SYSDB_NAME"=%s,"SYSDB_TMPL_NETGROUP_BASE
 #define SYSDB_TMPL_SUDOCMD SYSDB_NAME"=%s,"SYSDB_TMPL_SUDOCMD_BASE
+#define SYSDB_TMPL_SUDORULE SYSDB_NAME"=%s,"SYSDB_TMPL_SUDORULE_BASE
 #define SYSDB_TMPL_CUSTOM_SUBTREE "cn=%s,"SYSDB_TMPL_CUSTOM_BASE
 #define SYSDB_TMPL_CUSTOM SYSDB_NAME"=%s,cn=%s,"SYSDB_TMPL_CUSTOM_BASE
 
@@ -262,6 +267,8 @@ struct ldb_dn *sysdb_netgroup_base_dn(struct sysdb_ctx *sysdb, void *mem_ctx,
                                       const char *domain);
 struct ldb_dn *sysdb_sudocmd_dn(struct sysdb_ctx *sysdb, TALLOC_CTX *mem_ctx,
                                 const char *domain, const char *command);
+struct ldb_dn *sysdb_sudorule_dn(struct sysdb_ctx *sysdb, TALLOC_CTX *mem_ctx,
+                                 const char *domain, const char *rule);
 errno_t sysdb_group_dn_name(struct sysdb_ctx *sysdb, void *mem_ctx,
                             const char *dn_str, char **name);
 struct ldb_dn *sysdb_domain_dn(struct sysdb_ctx *sysdb, void *mem_ctx,
@@ -473,6 +480,12 @@ int sysdb_set_sudocmd_attr(struct sysdb_ctx *sysdb,
                            struct sysdb_attrs *attrs,
                            int mod_op);
 
+/* Replace sudo rule attrs */
+int sysdb_set_sudorule_attr(struct sysdb_ctx *sysdb,
+                            const char *rule,
+                            struct sysdb_attrs *attrs,
+                            int mod_op);
+
 /* Allocate a new id */
 int sysdb_get_new_id(struct sysdb_ctx *sysdb,
                      uint32_t *id);
@@ -538,6 +551,16 @@ int sysdb_add_sudocmd(struct sysdb_ctx *sysdb,
                       struct sysdb_attrs *attrs,
                       int cache_timeout,
                       time_t now);
+
+/* Add sudo rule (only basic attrs and w/o checks) */
+int sysdb_add_basic_sudorule(struct sysdb_ctx *sysdb,
+                             const char *rule);
+
+int sysdb_add_sudorule(struct sysdb_ctx *sysdb,
+                       const char *rule,
+                       struct sysdb_attrs *attrs,
+                       int cache_timeout,
+                       time_t now);
 
 /* mod_op must be either LDB_FLAG_MOD_ADD or LDB_FLAG_MOD_DELETE */
 int sysdb_mod_group_member(struct sysdb_ctx *sysdb,
@@ -616,6 +639,24 @@ errno_t sysdb_mod_netgroup_member(struct sysdb_ctx *sysdb,
                                   const char *netgroup,
                                   const char *member_netgroup,
                                   int mod_op);
+
+enum sysdb_sudorule_mtype {
+    SYSDB_SUDORULE_MEMBER_USER,
+    SYSDB_SUDORULE_MEMBER_GROUP,
+    SYSDB_SUDORULE_MEMBER_COMMAND,
+    SYSDB_SUDORULE_MEMBER_HOST,
+    SYSDB_SUDORULE_MEMBER_NETGROUP,
+};
+
+errno_t sysdb_add_sudorule_member(struct sysdb_ctx *sysdb,
+                                  const char *sudorule,
+                                  enum sysdb_sudorule_mtype member_type,
+                                  const char *member_sudorule);
+
+errno_t sysdb_remove_sudorule_member(struct sysdb_ctx *sysdb,
+                                     const char *sudorule,
+                                     enum sysdb_sudorule_mtype member_type,
+                                     const char *member_sudorule);
 
 /* Password caching function.
  * If you are in a transaction ignore sysdb and pass in the handle.
@@ -705,6 +746,13 @@ int sysdb_delete_netgroup(struct sysdb_ctx *sysdb,
 
 int sysdb_delete_sudocmd(struct sysdb_ctx *sysdb,
                          const char *command);
+
+int sysdb_search_sudorule(TALLOC_CTX *mem_ctx,
+                          struct sysdb_ctx *sysdb,
+                          const char *sub_filter,
+                          const char **attrs,
+                          size_t *msgs_count,
+                          struct ldb_message ***msgs);
 
 errno_t sysdb_attrs_to_list(TALLOC_CTX *mem_ctx,
                             struct sysdb_attrs **attrs,

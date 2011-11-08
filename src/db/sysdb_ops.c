@@ -651,6 +651,35 @@ done:
     return ret;
 }
 
+/* =Replace-Attributes-On-Sudo-Rule======================================= */
+
+int sysdb_set_sudorule_attr(struct sysdb_ctx *sysdb,
+                            const char *rule,
+                            struct sysdb_attrs *attrs,
+                            int mod_op)
+{
+    errno_t ret;
+    struct ldb_dn *dn;
+    TALLOC_CTX *tmp_ctx;
+
+    tmp_ctx = talloc_new(NULL);
+    if (!tmp_ctx) {
+        return ENOMEM;
+    }
+
+    dn = sysdb_sudorule_dn(sysdb, tmp_ctx, sysdb->domain->name, rule);
+    if (!dn) {
+        ret = ENOMEM;
+        goto done;
+    }
+
+    ret = sysdb_set_entry_attr(sysdb, dn, attrs, mod_op);
+
+done:
+    talloc_free(tmp_ctx);
+    return ret;
+}
+
 /* =Get-New-ID============================================================ */
 
 int sysdb_get_new_id(struct sysdb_ctx *sysdb,
@@ -1586,6 +1615,119 @@ done:
 
     if (ret != EOK) {
         DEBUG(6, ("Error: %d (%s)\n", ret, strerror(ret)));
+        ldb_transaction_cancel(sysdb->ldb);
+    }
+    talloc_zfree(tmp_ctx);
+    return ret;
+}
+
+/* =Add-Basic-Sudo-Rule-NO-CHECKS============================================= */
+
+/*
+ *  member          LDAP            IPA
+ *  -----------------------------------
+ *  user            DN              DN
+ *  group           DN              DN
+ *  host            hostname?       DN
+ *  hostgroup       netgroup DN?    DN
+ *  command         DN              DN
+ *  commandgroup    N/A             DN
+ */
+int sysdb_add_basic_sudorule(struct sysdb_ctx *sysdb,
+                             const char *rule)
+{
+    struct ldb_message *msg;
+    int ret;
+
+    msg = ldb_msg_new(NULL);
+    if (!msg) {
+        return ENOMEM;
+    }
+
+    /* sudo rule dn */
+    msg->dn = sysdb_sudorule_dn(sysdb, msg, sysdb->domain->name, rule);
+    if (!msg->dn) {
+        ERROR_OUT(ret, ENOMEM, done);
+    }
+
+    ret = add_string(msg, LDB_FLAG_MOD_ADD,
+                     SYSDB_OBJECTCLASS, SYSDB_SUDORULE_CLASS);
+    if (ret) goto done;
+
+    ret = add_string(msg, LDB_FLAG_MOD_ADD, SYSDB_NAME, rule);
+    if (ret) goto done;
+
+    /* creation time */
+    ret = add_ulong(msg, LDB_FLAG_MOD_ADD, SYSDB_CREATE_TIME,
+                    (unsigned long) time(NULL));
+    if (ret) goto done;
+
+    ret = ldb_add(sysdb->ldb, msg);
+    ret = sysdb_error_to_errno(ret);
+
+done:
+    if (ret) {
+        DEBUG(SSSDBG_OP_FAILURE, ("Error: %d (%s)\n", ret, strerror(ret)));
+    }
+    talloc_zfree(msg);
+    return ret;
+}
+
+int sysdb_add_sudorule(struct sysdb_ctx *sysdb,
+                       const char *rule,
+                       struct sysdb_attrs *attrs,
+                       int cache_timeout,
+                       time_t now)
+{
+    TALLOC_CTX *tmp_ctx;
+    int ret;
+
+    tmp_ctx = talloc_new(NULL);
+    if (!tmp_ctx) {
+        return ENOMEM;
+    }
+
+    ret = ldb_transaction_start(sysdb->ldb);
+    if (ret) {
+        ret = sysdb_error_to_errno(ret);
+        talloc_free(tmp_ctx);
+        return ret;
+    }
+
+    /* try to add the sudo rule */
+    ret = sysdb_add_basic_sudorule(sysdb, rule);
+    if (ret && ret != EEXIST) goto done;
+
+    if (!attrs) {
+        attrs = sysdb_new_attrs(tmp_ctx);
+        if (!attrs) {
+            ret = ENOMEM;
+            goto done;
+        }
+    }
+
+    if (!now) {
+        now = time(NULL);
+    }
+
+    ret = sysdb_attrs_add_time_t(attrs, SYSDB_LAST_UPDATE, now);
+    if (ret) goto done;
+
+    ret = sysdb_attrs_add_time_t(attrs, SYSDB_CACHE_EXPIRE,
+                                 ((cache_timeout) ?
+                                  (now + cache_timeout) : 0));
+    if (ret) goto done;
+
+    ret = sysdb_set_sudorule_attr(sysdb, rule, attrs, SYSDB_MOD_REP);
+
+done:
+    if (ret == EOK) {
+        ret = ldb_transaction_commit(sysdb->ldb);
+        ret = sysdb_error_to_errno(ret);
+    }
+
+    if (ret != EOK) {
+        DEBUG(SSSDBG_OP_FAILURE, ("Error: %d (%s)\n", ret, strerror(ret)));
         ldb_transaction_cancel(sysdb->ldb);
     }
     talloc_zfree(tmp_ctx);
@@ -2644,6 +2786,58 @@ done:
     return ret;
 }
 
+/* =Search-Sudo-Rules-With-Custom-Filter=================================== */
+
+int sysdb_search_sudorule(TALLOC_CTX *mem_ctx,
+                          struct sysdb_ctx *sysdb,
+                          const char *sub_filter,
+                          const char **attrs,
+                          size_t *msgs_count,
+                          struct ldb_message ***msgs)
+{
+    TALLOC_CTX *tmp_ctx;
+    struct ldb_dn *basedn;
+    char *filter;
+    int ret;
+
+    tmp_ctx = talloc_new(NULL);
+    if (!tmp_ctx) {
+        return ENOMEM;
+    }
+
+    basedn = ldb_dn_new_fmt(tmp_ctx, sysdb->ldb,
+                            SYSDB_TMPL_SUDORULE_BASE, sysdb->domain->name);
+    if (!basedn) {
+        DEBUG(SSSDBG_MINOR_FAILURE, ("Failed to build base dn\n"));
+        ret = ENOMEM;
+        goto fail;
+    }
+
+    filter = talloc_asprintf(tmp_ctx, "(&(%s)%s)",
+                             SYSDB_SUDORULEC, sub_filter);
+    if (!filter) {
+        DEBUG(SSSDBG_MINOR_FAILURE, ("Failed to build filter\n"));
+        ret = ENOMEM;
+        goto fail;
+    }
+
+    DEBUG(SSSDBG_TRACE_FUNC, ("Search sudo rules with filter: %s\n", filter));
+
+    ret = sysdb_search_entry(mem_ctx, sysdb, basedn,
+                             LDB_SCOPE_SUBTREE, filter, attrs,
+                             msgs_count, msgs);
+    if (ret) {
+        goto fail;
+    }
+
+    talloc_zfree(tmp_ctx);
+    return EOK;
+
+fail:
+    DEBUG(SSSDBG_OP_FAILURE, ("Error: %d (%s)\n", ret, strerror(ret)));
+    talloc_zfree(tmp_ctx);
+    return ret;
+}
 
 /* ========= Authentication against cached password ============ */
 
@@ -3201,4 +3395,89 @@ done:
     }
     talloc_free(msg);
     return ret;
+}
+
+errno_t sysdb_mod_sudorule_member(struct sysdb_ctx *sysdb,
+                                  const char *sudorule,
+                                  enum sysdb_sudorule_mtype member_type,
+                                  const char *member_sudorule,
+                                  int mod_op)
+{
+    errno_t ret;
+    int lret;
+    struct ldb_message *msg;
+    char *member;
+    const char *template;
+
+    switch (member_type) {
+        case SYSDB_SUDORULE_MEMBER_USER:
+            template = SYSDB_TMPL_USER;
+            break;
+        case SYSDB_SUDORULE_MEMBER_GROUP:
+            template = SYSDB_TMPL_GROUP;
+            break;
+        case SYSDB_SUDORULE_MEMBER_COMMAND:
+            template = SYSDB_TMPL_SUDOCMD;
+            break;
+        case SYSDB_SUDORULE_MEMBER_HOST:
+            /* FIXME */
+            return ENOSYS;
+        case SYSDB_SUDORULE_MEMBER_NETGROUP:
+            template = SYSDB_TMPL_NETGROUP;
+            break;
+        default:
+            DEBUG(SSSDBG_MINOR_FAILURE, ("Wrong sudo rule "
+                  "member type %d\n", member_type));
+            return EINVAL;
+    }
+
+    msg = ldb_msg_new(NULL);
+    if (!msg) {
+        ERROR_OUT(ret, ENOMEM, done);
+    }
+
+    msg->dn = sysdb_sudorule_dn(sysdb, msg, sysdb->domain->name, sudorule);
+    if (!msg->dn) {
+        ERROR_OUT(ret, ENOMEM, done);
+    }
+
+    member = talloc_asprintf(msg, template,
+                             member_sudorule, sysdb->domain->name);
+    if (!member) {
+        ret = ENOMEM;
+        goto done;
+    }
+
+    ret = add_string(msg, mod_op, SYSDB_MEMBER, member);
+    if (ret != EOK) {
+        goto done;
+    }
+
+    lret = ldb_modify(sysdb->ldb, msg);
+    ret = sysdb_error_to_errno(lret);
+
+done:
+    if (ret) {
+        DEBUG(SSSDBG_OP_FAILURE, ("Error: %d (%s)\n", ret, strerror(ret)));
+    }
+    talloc_free(msg);
+    return ret;
+}
+
+errno_t sysdb_add_sudorule_member(struct sysdb_ctx *sysdb,
+                                  const char *sudorule,
+                                  enum sysdb_sudorule_mtype member_type,
+                                  const char *member_sudorule)
+{
+    return sysdb_mod_sudorule_member(sysdb, sudorule, member_type,
+                                     member_sudorule, SYSDB_MOD_ADD);
+}
+
+errno_t sysdb_remove_sudorule_member(struct sysdb_ctx *sysdb,
+                                     const char *sudorule,
+                                     enum sysdb_sudorule_mtype member_type,
+                                     const char *member_sudorule)
+{
+    return sysdb_mod_sudorule_member(sysdb, sudorule, member_type,
+                                     member_sudorule, SYSDB_MOD_DEL);
 }
