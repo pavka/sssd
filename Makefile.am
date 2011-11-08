@@ -849,6 +849,7 @@ libsss_ldap_la_SOURCES = \
     src/providers/ldap/ldap_auth.c \
     src/providers/ldap/ldap_init.c \
     src/providers/ldap/ldap_common.c \
+    src/providers/ldap/sdap_sudo.c \
     src/providers/ldap/sdap_async.c \
     src/providers/ldap/sdap_async_users.c \
     src/providers/ldap/sdap_async_groups.c \
