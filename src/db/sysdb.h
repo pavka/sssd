@@ -43,6 +43,7 @@
 #define SYSDB_TMPL_GROUP_BASE SYSDB_GROUPS_CONTAINER",cn=%s,"SYSDB_BASE
 #define SYSDB_TMPL_CUSTOM_BASE SYSDB_CUSTOM_CONTAINER",cn=%s,"SYSDB_BASE
 #define SYSDB_TMPL_NETGROUP_BASE SYSDB_NETGROUP_CONTAINER",cn=%s,"SYSDB_BASE
+#define SYSDB_TMPL_SUDO_BASE SYSDB_SUDO_CONTAINER",cn=%s,"SYSDB_BASE
 #define SYSDB_TMPL_SUDOCMD_BASE SYSDB_SUDOCMDS_CONTAINER",cn=%s,"SYSDB_BASE
 #define SYSDB_TMPL_SUDORULE_BASE SYSDB_SUDORULES_CONTAINER",cn=%s,"SYSDB_BASE
 
@@ -269,6 +270,8 @@ struct ldb_dn *sysdb_sudocmd_dn(struct sysdb_ctx *sysdb, TALLOC_CTX *mem_ctx,
                                 const char *domain, const char *command);
 struct ldb_dn *sysdb_sudorule_dn(struct sysdb_ctx *sysdb, TALLOC_CTX *mem_ctx,
                                  const char *domain, const char *rule);
+struct ldb_dn *sysdb_sudo_dn(struct sysdb_ctx *sysdb, TALLOC_CTX *mem_ctx,
+                             const char *domain);
 errno_t sysdb_group_dn_name(struct sysdb_ctx *sysdb, void *mem_ctx,
                             const char *dn_str, char **name);
 struct ldb_dn *sysdb_domain_dn(struct sysdb_ctx *sysdb, void *mem_ctx,

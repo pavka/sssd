@@ -252,6 +252,16 @@ struct ldb_dn *sysdb_sudorule_dn(struct sysdb_ctx *sysdb, TALLOC_CTX *mem_ctx,
     return dn;
 }
 
+struct ldb_dn *sysdb_sudo_dn(struct sysdb_ctx *sysdb, TALLOC_CTX *mem_ctx,
+                             const char *domain)
+{
+    struct ldb_dn *dn;
+
+    dn = ldb_dn_new_fmt(mem_ctx, sysdb->ldb, SYSDB_TMPL_SUDO_BASE, domain);
+
+    return dn;
+}
+
 errno_t sysdb_get_rdn(struct sysdb_ctx *sysdb, TALLOC_CTX *mem_ctx,
                       const char *_dn, char **_name, char **_val)
 {
