@@ -52,6 +52,10 @@ static int  sdap_sudo_connect(struct sdap_sudo_ctx *sudo_ctx);
 static void sdap_sudo_connect_done(struct tevent_req *subreq);
 static int sdap_sudo_load_sudoers(struct sdap_sudo_ctx *sudo_ctx);
 static void sdap_sudo_load_sudoers_done(struct tevent_req *subreq);
+static int sdap_sudo_purge_sudoers(struct sdap_sudo_ctx *sudo_ctx);
+static int sdap_sudo_store_sudoers(struct sdap_sudo_ctx *sudo_ctx,
+                                   size_t replies_count,
+                                   struct sysdb_attrs **replies);
 
 void sdap_sudo_handler(struct be_req *be_req)
 {
@@ -159,6 +163,7 @@ int sdap_sudo_load_sudoers(struct sdap_sudo_ctx *sudo_ctx)
     struct be_ctx *be_ctx = sudo_ctx->be_ctx;
     struct sdap_id_ctx *sdap_ctx = sudo_ctx->sdap_ctx;
     static const char *attrs[] = {
+        SDAP_SUDO_ATTR_CN,
         SDAP_SUDO_ATTR_USER,
         SDAP_SUDO_ATTR_HOST,
         SDAP_SUDO_ATTR_COMMAND,
@@ -200,18 +205,32 @@ int sdap_sudo_load_sudoers(struct sdap_sudo_ctx *sudo_ctx)
 void sdap_sudo_load_sudoers_done(struct tevent_req *subreq)
 {
     struct sdap_sudo_ctx *sudo_ctx = NULL;
-    struct sysdb_attrs **reply = NULL;
-    size_t reply_count = 0;
+    struct sysdb_attrs **replies = NULL;
+    size_t replies_count = 0;
     int ret;
 
     DEBUG(SSSDBG_TRACE_FUNC, ("Entering sdap_sudo_load_sudoers_done()\n"));
 
     sudo_ctx = tevent_req_callback_data(subreq, struct sdap_sudo_ctx);
 
-    ret = sdap_get_generic_recv(subreq, sudo_ctx, &reply_count, &reply);
+    ret = sdap_get_generic_recv(subreq, sudo_ctx, &replies_count, &replies);
     if (ret != EOK) {
         goto fail;
     }
+
+    ret = sdap_sudo_purge_sudoers(sudo_ctx);
+    if (ret != EOK) {
+        DEBUG(SSSDBG_CRIT_FAILURE, ("Unable to purge sudoers cache\n"));
+        goto fail;
+    }
+
+    ret = sdap_sudo_store_sudoers(sudo_ctx, replies_count, replies);
+    if (ret != EOK) {
+        DEBUG(SSSDBG_CRIT_FAILURE, ("Unable to store sudoers in cache\n"));
+        goto fail;
+    }
+
+    DEBUG(SSSDBG_TRACE_FUNC, ("Sudoers is successfuly stored in cache\n"));
 
     sdap_sudo_reply(sudo_ctx, EOK);
 
@@ -219,4 +238,85 @@ void sdap_sudo_load_sudoers_done(struct tevent_req *subreq)
 
 fail:
     sdap_sudo_reply(sudo_ctx, ret);
+}
+
+int sdap_sudo_purge_sudoers(struct sdap_sudo_ctx *sudo_ctx)
+{
+    struct sysdb_ctx *sysdb_ctx = sudo_ctx->be_ctx->sysdb;
+    struct ldb_dn *base_dn = NULL;
+    TALLOC_CTX *tmp_ctx = NULL;
+    int ret = EOK;
+
+    tmp_ctx = talloc_new(NULL);
+    if (tmp_ctx == NULL) {
+        DEBUG(SSSDBG_CRIT_FAILURE, ("talloc_new() failed\n"));
+        ret = ENOMEM;
+        goto done;
+    }
+
+    base_dn = sysdb_sudo_dn(sysdb_ctx, tmp_ctx, sudo_ctx->be_ctx->domain->name);
+    if (base_dn == NULL) {
+        ret = ENOMEM;
+        goto done;
+    }
+
+    ret = sysdb_delete_recursive(sysdb_ctx, base_dn, true);
+    if (ret != EOK) {
+        DEBUG(SSSDBG_CRIT_FAILURE, ("sysdb_delete_recursive() failed.\n"));
+        goto done;
+    }
+
+    ret = EOK;
+
+done:
+    talloc_free(tmp_ctx);
+    return ret;
+}
+
+int sdap_sudo_store_sudoers(struct sdap_sudo_ctx *sudo_ctx,
+                            size_t replies_count,
+                            struct sysdb_attrs **replies)
+{
+    struct sysdb_ctx *sysdb_ctx = sudo_ctx->be_ctx->sysdb;
+    const char *name = NULL;
+    bool in_transaction = false;
+    int ret = EOK;
+    int i = 0;
+
+    ret = sysdb_transaction_start(sysdb_ctx);
+    if (ret != EOK) {
+        DEBUG(SSSDBG_CRIT_FAILURE, ("Could not start transaction\n"));
+        goto fail;
+    }
+    in_transaction = true;
+
+    for (i = 0; i < replies_count; i++) {
+        ret = sysdb_attrs_get_string(replies[i], SDAP_SUDO_ATTR_CN, &name);
+        if (ret != EOK) {
+            goto fail;
+        }
+
+        ret = sysdb_add_sudorule(sysdb_ctx, name, replies[i], 0, 0);
+        if (ret != EOK) {
+            goto fail;
+        }
+    }
+
+    ret = sysdb_transaction_commit(sysdb_ctx);
+    if (ret != EOK) {
+        DEBUG(SSSDBG_CRIT_FAILURE, ("Failed to commit transaction\n"));
+        goto fail;
+    }
+
+    return EOK;
+
+fail:
+    if (in_transaction) {
+        ret = sysdb_transaction_cancel(sysdb_ctx);
+        if (ret != EOK) {
+            DEBUG(SSSDBG_CRIT_FAILURE, ("Could not cancel transaction\n"));
+        }
+    }
+
+    return ret;
 }

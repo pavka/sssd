@@ -29,6 +29,7 @@ struct sdap_sudo_ctx {
     struct sdap_id_conn_cache *sdap_conn_cache;
 };
 
+#define SDAP_SUDO_ATTR_CN       "cn"
 #define SDAP_SUDO_ATTR_USER       "sudoUser"
 #define SDAP_SUDO_ATTR_HOST       "sudoHost"
 #define SDAP_SUDO_ATTR_COMMAND    "sudoCommand"
