@@ -347,15 +347,19 @@ errno_t policy_check_parse_response(char *response,
 {
 #define LOAD_ARRAY(element) do { \
     i = 0; \
-    while (*current_position != '\0') { \
-        i++; \
-        element = (char**)realloc(element, i * sizeof(char*)); \
-        element[i - 1] = current_position; \
-        current_position = strchr(current_position, '\0'); \
-        if (current_position == NULL) { \
-            ret = ESPIPE; \
-            goto done; \
+    if (*current_position != '\0') { \
+        while (*current_position != '\0') { \
+            i++; \
+            element = (char**)realloc(element, i * sizeof(char*)); \
+            element[i - 1] = current_position; \
+            current_position = strchr(current_position, '\0'); \
+            if (current_position == NULL) { \
+                ret = ESPIPE; \
+                goto done; \
+            } \
+            current_position++; \
         } \
+    } else { \
         current_position++; \
     } \
     i++; \

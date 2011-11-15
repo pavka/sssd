@@ -431,6 +431,8 @@ sssd_pam_LDADD = \
 sssd_sudo_SOURCES = \
     src/responder/sudo/sudosrv.c \
     src/responder/sudo/sudosrv_cmd.c \
+    src/responder/sudo/sudosrv_check.c \
+    src/responder/sudo/sudosrv_query.c \
     src/responder/sudo/sudosrv_dp.c \
     $(SSSD_RESPONDER_OBJ)
 sssd_sudo_LDADD = \

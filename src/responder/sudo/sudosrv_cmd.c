@@ -23,249 +23,90 @@
 #include <sudo_plugin.h>
 
 #include "util/util.h"
-#include "confdb/confdb.h"
 #include "responder/common/responder.h"
 #include "responder/common/responder_packet.h"
 #include "responder/sudo/sudosrv.h"
-#include "sss_client/sudo_plugin/sss_sudoplugin.h"
-#include "sss_client/sss_cli.h"
+#include "responder/sudo/sudosrv_private.h"
 
-static int sudo_cmd_check_response(struct cli_ctx *cctx,
-                                   int return_code,
-                                   int argc,
-                                   char **argv,
-                                   char *command_info,
-                                   int command_info_length,
-                                   char **user_env)
+static int sudo_cmd_check(struct cli_ctx *cli_ctx)
 {
-#define APPEND_ELEMENT(element, length) do { \
-    iter_length = length; \
-    sss_packet_grow(packet_out, iter_length * sizeof(char)); \
-    sss_packet_get_body(packet_out, &body, &blen); \
-    memcpy(body + packet_offset, element, iter_length); \
-    packet_offset += iter_length; \
-} while(0)
-
-#define APPEND_ZERO() do { \
-    sss_packet_grow(packet_out, 1 * sizeof(char)); \
-    sss_packet_get_body(packet_out, &body, &blen); \
-    body[packet_offset] = '\0'; \
-    packet_offset++; \
-} while(0)
-
-    int i;
-    int ret;
-    int iter_length;
-    uint8_t *body;
-    size_t blen;
-    size_t packet_offset = 0;
-    struct sss_packet *packet_out = NULL;
-
-    ret = sss_packet_new(cctx->creq, 0,
-                         sss_packet_get_cmd(cctx->creq->in),
-                         &cctx->creq->out);
-    if (ret != EOK) {
-        return ret;
-    }
-    packet_out = cctx->creq->out;
-
-    sss_packet_set_error(packet_out, EOK);
-
-    /* fill data */
-
-    /* result */
-    ret = sss_packet_grow(packet_out, sizeof(int));
-    if (ret != EOK) {
-        return ret;
-    }
-    sss_packet_get_body(packet_out, &body, &blen);
-    SAFEALIGN_SET_VALUE(&body[packet_offset], return_code, int, &packet_offset);
-
-    if (return_code == SSS_SUDO_RESPONSE_ALLOW) {
-        /* argv */
-        for (i = 0; i < argc; i++) {
-            APPEND_ELEMENT(argv[i], strlen(argv[i]) + 1);
-        }
-        APPEND_ZERO();
-
-        /* command_info */
-        APPEND_ELEMENT(command_info, command_info_length);
-        APPEND_ZERO();
-
-        /* user_env */
-        APPEND_ZERO();
-        APPEND_ZERO();
-    }
-
-    return EOK;
-
-#undef APPEND_ELEMENT
-#undef APPEND_ZERO
-}
-
-static int sudo_cmd_check_parse_query(TALLOC_CTX *mem_ctx,
-                                      char *query,
-                                      int query_length,
-                                      char **_command_out,
-                                      char ***_argv_out,
-                                      int *_argc_out)
-{
-    TALLOC_CTX *tmp_ctx;
-    char *current_position = query;
-    char **argv_out;
-    int argc_out = 0;
-    int ret;
-
-    tmp_ctx = talloc_new(NULL);
-    if (tmp_ctx == NULL) {
-        DEBUG(SSSDBG_CRIT_FAILURE, ("talloc_new() failed"));
-        ret = ENOMEM;
-        goto done;
-    }
-
-    /* get command */
-    *_command_out = current_position;
-    current_position = strchr(current_position, '\0');
-    if (current_position == NULL) {
-        ret = ESPIPE;
-        goto done;
-    }
-    current_position++;
-
-    /* get argv */
-    while (*current_position != '\0') {
-        argc_out++;
-        argv_out = talloc_realloc(tmp_ctx, argv_out, char*, argc_out);
-        argv_out[argc_out - 1] = current_position;
-
-        current_position = strchr(current_position, '\0');
-        if (current_position == NULL) {
-            ret = ESPIPE;
-            goto done;
-        }
-        current_position++;
-    }
-    current_position++;
-
-    /* TODO get env_add */
-
-    /* TODO get user_env */
-
-    /* TODO get settings */
-
-    /* TODO get user_info */
-
-
-    *_argc_out = argc_out;
-    *_argv_out = talloc_steal(mem_ctx, argv_out);
-
-    ret = EOK;
-
-done:
-    talloc_free(tmp_ctx);
-    return ret;
-}
-
-static int sudo_cmd_check_create_command_info(TALLOC_CTX *mem_ctx,
-                                                char *command,
-                                                char **command_info_out,
-                                                int *command_info_length_out)
-{
-    TALLOC_CTX *tmp_ctx;
-    char *command_info;
-    int command_info_length = 0;
-    int ret;
-
-    tmp_ctx = talloc_new(NULL);
-    if (tmp_ctx == NULL) {
-        DEBUG(SSSDBG_CRIT_FAILURE, ("talloc_new() failed"));
-        ret = ENOMEM;
-        goto done;
-    }
-
-    command_info = talloc_asprintf(tmp_ctx, "command=%s", command);
-    if (command_info == NULL) {
-        DEBUG(SSSDBG_CRIT_FAILURE, ("talloc_asprintf() failed"));
-        ret = ENOMEM;
-        goto done;
-    }
-    command_info_length += strlen(command_info) + 1; /* with \0 */
-
-    /* TODO support other fields */
-
-    *command_info_length_out = command_info_length;
-    *command_info_out = talloc_steal(mem_ctx, command_info);
-
-    ret = EOK;
-
-done:
-    talloc_free(tmp_ctx);
-    return ret;
-}
-
-static int sudo_cmd_check(struct cli_ctx *cctx) {
-    TALLOC_CTX *mem_ctx;
-    uint8_t *body;
-    size_t blen;
-    char *query = NULL;
-    char *command_in = NULL;
-    char **argv_in = NULL;
-    char *command_info_out = NULL;
-    int command_info_out_length = 0;
-    int argc_in = 0;
-    int ret;
-    int sudo_result;
+    struct sudo_check_output *output = NULL;
+    struct sudo_check_input *input = NULL;
+    struct sss_packet *packet = NULL;
+    uint8_t *packet_body = NULL;
+    size_t packet_length = 0;
+    TALLOC_CTX *mem_ctx = NULL;
+    uint8_t *response_body = NULL;
+    size_t response_length = 0;
+    uint8_t *query_body = NULL;
+    size_t query_length = 0;
+    int ret = EOK;
 
     mem_ctx = talloc_new(NULL);
     if (mem_ctx == NULL) {
-        DEBUG(SSSDBG_CRIT_FAILURE, ("talloc_new() failed"));
+        DEBUG(SSSDBG_CRIT_FAILURE, ("talloc_new() failed\n"));
         return ENOMEM;
     }
 
-    /* get query string */
-    sss_packet_get_body(cctx->creq->in, &body, &blen);
-    if (blen <= 0 || body == NULL) {
-        DEBUG(SSSDBG_OP_FAILURE, ("Query string is empty"));
+    /* get query */
+    sss_packet_get_body(cli_ctx->creq->in, &query_body, &query_length);
+    if (query_length <= 0 || query_body == NULL) {
+        DEBUG(SSSDBG_CRIT_FAILURE, ("Query is empty\n"));
         ret = EINVAL;
         goto done;
     }
-    query = (char*)body;
 
-    /* parse query string */
-    ret = sudo_cmd_check_parse_query(mem_ctx, query, blen, &command_in,
-                                     &argv_in, &argc_in);
-    if (ret != EOK) {
-        DEBUG(SSSDBG_OP_FAILURE, ("Unable to parse query string"));
+    /* parse query */
+    input = sudosrv_check_parse_query(mem_ctx, (char*)query_body, query_length);
+    if (input == NULL) {
+        ret = errno;
+        DEBUG(SSSDBG_CRIT_FAILURE,
+              ("Unable to parse query: %s\n", strerror(ret)));
         goto done;
     }
 
-    /* TODO can user run this command? */
-
-    sudo_result = SSS_SUDO_RESPONSE_ALLOW;
-
-    /* create command info */
-    if (sudo_result == SSS_SUDO_RESPONSE_ALLOW) {
-        ret = sudo_cmd_check_create_command_info(mem_ctx, command_in,
-                                                 &command_info_out,
-                                                 &command_info_out_length);
-        if (ret != EOK) {
-            DEBUG(SSSDBG_CRIT_FAILURE, ("Unable to create command info string"));
-            return ENOMEM;
-        }
+    /* evaluate sudo rules */
+    output = sudosrv_check(mem_ctx, cli_ctx, input);
+    if (output == NULL) {
+        ret = errno;
+        DEBUG(SSSDBG_CRIT_FAILURE,
+              ("Unable to evaluate sudo rules: %s\n", strerror(ret)));
+        goto done;
     }
 
-    /* contact DP */
-    ret = sudo_dp_refresh_send(cctx, cctx->rctx->domains->name,
-                               SSS_CLI_SOCKET_TIMEOUT/2);
+    /* create response message */
+    ret = sudosrv_check_build_response(mem_ctx, output,
+                                       &response_body, &response_length);
+    if (ret != EOK) {
+        DEBUG(SSSDBG_CRIT_FAILURE,
+              ("Unable to create response message: %s\n", strerror(ret)));
+        goto done;
+    }
 
-    /* send response */
-    sudo_cmd_check_response(cctx, sudo_result, argc_in, argv_in,
-                            command_info_out, command_info_out_length, NULL);
+    /* set response */
+    ret = sss_packet_new(cli_ctx->creq, 0,
+                         sss_packet_get_cmd(cli_ctx->creq->in),
+                         &cli_ctx->creq->out);
+    if (ret != EOK) {
+        return ret;
+    }
+    packet = cli_ctx->creq->out;
+
+    sss_packet_set_error(packet, EOK);
+
+    ret = sss_packet_grow(packet, response_length);
+    if (ret != EOK) {
+        DEBUG(SSSDBG_CRIT_FAILURE,
+              ("Unable to create response: %s\n", strerror(ret)));
+        return ret;
+    }
+    sss_packet_get_body(packet, &packet_body, &packet_length);
+    memcpy(packet_body, response_body, response_length);
 
     ret = EOK;
 
 done:
-    sss_cmd_done(cctx, NULL);
+    sss_cmd_done(cli_ctx, NULL);
     talloc_free(mem_ctx);
 
     return ret;

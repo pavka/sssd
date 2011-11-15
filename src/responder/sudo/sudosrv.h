@@ -21,6 +21,8 @@
 #ifndef SUDOSRV_H_
 #define SUDOSRV_H_
 
+#include "responder/common/responder.h"
+
 #define SSS_SUDO_SBUS_SERVICE_VERSION 0x0001
 #define SSS_SUDO_SBUS_SERVICE_NAME "sudo"
 
