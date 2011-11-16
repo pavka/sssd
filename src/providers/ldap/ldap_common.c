@@ -49,6 +49,7 @@ struct dp_option default_basic_opts[] = {
     { "ldap_group_search_base", DP_OPT_STRING, NULL_STRING, NULL_STRING },
     { "ldap_group_search_scope", DP_OPT_STRING, { "sub" }, NULL_STRING },
     { "ldap_group_search_filter", DP_OPT_STRING, NULL_STRING, NULL_STRING },
+    { "ldap_sudo_search_base", DP_OPT_STRING, NULL_STRING, NULL_STRING },
     { "ldap_schema", DP_OPT_STRING, { "rfc2307" }, NULL_STRING },
     { "ldap_offline_timeout", DP_OPT_NUMBER, { .number = 60 }, NULL_NUMBER },
     { "ldap_force_upper_case_realm", DP_OPT_BOOL, BOOL_FALSE, BOOL_FALSE },
@@ -237,6 +238,7 @@ int ldap_get_options(TALLOC_CTX *memctx,
     const int search_base_options[] = { SDAP_USER_SEARCH_BASE,
                                         SDAP_GROUP_SEARCH_BASE,
                                         SDAP_NETGROUP_SEARCH_BASE,
+                                        SDAP_SUDO_SEARCH_BASE,
                                         -1 };
 
     opts = talloc_zero(memctx, struct sdap_options);
@@ -253,7 +255,7 @@ int ldap_get_options(TALLOC_CTX *memctx,
     /* Handle search bases */
     search_base = dp_opt_get_string(opts->basic, SDAP_SEARCH_BASE);
     if (search_base != NULL) {
-        /* set user/group/netgroup search bases if they are not */
+        /* set user/group/netgroup/sudo search bases if they are not */
         for (o = 0; search_base_options[o] != -1; o++) {
             if (NULL == dp_opt_get_string(opts->basic, search_base_options[o])) {
                 ret = dp_opt_set_string(opts->basic, search_base_options[o],
@@ -294,6 +296,12 @@ int ldap_get_options(TALLOC_CTX *memctx,
     ret = sdap_parse_search_base(opts, opts,
                                  SDAP_NETGROUP_SEARCH_BASE,
                                  &opts->netgroup_search_bases);
+    if (ret != EOK && ret != ENOENT) goto done;
+
+    /* Sudo search */
+    ret = sdap_parse_search_base(opts, opts,
+                                 SDAP_SUDO_SEARCH_BASE,
+                                 &opts->sudo_search_bases);
     if (ret != EOK && ret != ENOENT) goto done;
 
     pwd_policy = dp_opt_get_string(opts->basic, SDAP_PWD_POLICY);
@@ -529,6 +537,9 @@ errno_t sdap_parse_search_base(TALLOC_CTX *mem_ctx,
         break;
     case SDAP_NETGROUP_SEARCH_BASE:
         class_name = "NETGROUP";
+        break;
+    case SDAP_SUDO_SEARCH_BASE:
+        class_name = "SUDO";
         break;
     default:
         DEBUG(SSSDBG_CONF_SETTINGS,

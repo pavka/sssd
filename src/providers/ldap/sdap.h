@@ -164,6 +164,7 @@ enum sdap_basic_opt {
     SDAP_GROUP_SEARCH_BASE,
     SDAP_GROUP_SEARCH_SCOPE,
     SDAP_GROUP_SEARCH_FILTER,
+    SDAP_SUDO_SEARCH_BASE,
     SDAP_SCHEMA,
     SDAP_OFFLINE_TIMEOUT,
     SDAP_FORCE_UPPER_CASE_REALM,
@@ -312,6 +313,7 @@ struct sdap_options {
     struct sdap_search_base **user_search_bases;
     struct sdap_search_base **group_search_bases;
     struct sdap_search_base **netgroup_search_bases;
+    struct sdap_search_base **sudo_search_bases;
 };
 
 struct sdap_server_opts {

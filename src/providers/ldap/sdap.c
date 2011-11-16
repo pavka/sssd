@@ -710,6 +710,9 @@ static errno_t sdap_set_search_base(struct sdap_options *opts,
     case SDAP_NETGROUP_SEARCH_BASE:
         bases = &opts->netgroup_search_bases;
         break;
+    case SDAP_SUDO_SEARCH_BASE:
+        bases = &opts->sudo_search_bases;
+        break;
     default:
         return EINVAL;
     }
@@ -779,6 +782,14 @@ errno_t sdap_set_config_options_with_rootdse(struct sysdb_attrs *rootdse,
     if (!opts->netgroup_search_bases) {
         ret = sdap_set_search_base(opts,
                                    SDAP_NETGROUP_SEARCH_BASE,
+                                   naming_context);
+        if (ret != EOK) goto done;
+    }
+
+    /* Sudo */
+    if (!opts->sudo_search_bases) {
+        ret = sdap_set_search_base(opts,
+                                   SDAP_SUDO_SEARCH_BASE,
                                    naming_context);
         if (ret != EOK) goto done;
     }
