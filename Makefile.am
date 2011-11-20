@@ -232,7 +232,8 @@ SSSD_TOOLS_OBJ = \
     src/tools/nscd.c
 
 SSSD_RESOLV_OBJ = \
-    src/resolv/async_resolv.c
+    src/resolv/async_resolv.c \
+    src/resolv/cached_resolv.c
 if BUILD_ARES_DATA
     SSSD_RESOLV_OBJ += \
     src/resolv/ares/ares_parse_srv_reply.c \
@@ -349,6 +350,7 @@ dist_noinst_HEADERS = \
     src/tools/tools_util.h \
     src/tools/sss_sync_ops.h \
     src/resolv/async_resolv.h \
+    src/resolv/cached_resolv.h \
     src/resolv/ares/ares_parse_srv_reply.h \
     src/resolv/ares/ares_parse_txt_reply.h \
     src/resolv/ares/ares_data.h \

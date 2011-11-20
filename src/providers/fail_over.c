@@ -117,11 +117,6 @@ struct resolve_service_request {
     struct tevent_req *req;
 };
 
-struct status {
-    int value;
-    struct timeval last_change;
-};
-
 struct fo_ctx *
 fo_context_init(TALLOC_CTX *mem_ctx, struct fo_options *opts)
 {

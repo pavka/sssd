@@ -34,8 +34,9 @@
 #include "tests/common.h"
 #include "util/util.h"
 
-/* Interface under test */
+/* Interfaces under test */
 #include "resolv/async_resolv.h"
+#include "resolv/cached_resolv.h"
 
 static int use_net_test;
 static char *txt_host;
@@ -44,6 +45,7 @@ static char *srv_host;
 struct resolv_test_ctx {
     struct tevent_context *ev;
     struct resolv_ctx *resolv;
+    struct cached_resolv_ctx *cctx;
 
     enum {
         TESTING_HOSTNAME,
@@ -53,6 +55,8 @@ struct resolv_test_ctx {
 
     int error;
     bool done;
+
+    bool negative;
 };
 
 static int setup_resolv_test(struct resolv_test_ctx **ctx)
@@ -76,6 +80,30 @@ static int setup_resolv_test(struct resolv_test_ctx **ctx)
     ret = resolv_init(test_ctx, test_ctx->ev, 5, &test_ctx->resolv);
     if (ret != EOK) {
         fail("Could not init resolv context");
+        talloc_free(test_ctx);
+        return ret;
+    }
+
+    test_ctx->negative = false;
+    *ctx = test_ctx;
+    return EOK;
+}
+
+static int setup_cached_resolv_test(struct resolv_test_ctx **ctx)
+{
+    int ret;
+    struct resolv_test_ctx *test_ctx;
+
+    ret = setup_resolv_test(&test_ctx);
+    if (ret != EOK) {
+        fail("Could not setup resolv test context\n");
+        return ret;
+    }
+    fail_unless(ret == EOK);
+
+    test_ctx->cctx = cres_init(test_ctx, test_ctx->resolv);
+    if (test_ctx == NULL) {
+        fail("Could not setup cached resolv context\n");
         talloc_free(test_ctx);
         return ret;
     }
@@ -417,6 +445,36 @@ static void test_internet(struct tevent_req *req)
     check_leaks_pop(tmp_ctx);
 }
 
+static void test_cached_internet(struct tevent_req *req)
+{
+    int recv_status;
+    int status;
+    struct resolv_test_ctx *test_ctx;
+    struct resolv_hostent *rhostent = NULL;
+
+    test_ctx = tevent_req_callback_data(req, struct resolv_test_ctx);
+
+    test_ctx->done = true;
+
+    switch (test_ctx->tested_function) {
+    case TESTING_HOSTNAME:
+        recv_status = cres_gethostbyname_recv(req, &rhostent);
+        test_ctx->error = (!rhostent || !rhostent->name) ? ENOENT : EOK;
+        break;
+    case TESTING_TXT:
+    case TESTING_SRV:
+        recv_status = ENOSYS;
+        break;
+    default:
+        recv_status = EINVAL;
+        break;
+    }
+    talloc_zfree(req);
+
+    fail_if(recv_status != (test_ctx->negative ? ENOENT : EOK),
+            "The recv function failed: %d", recv_status);
+}
+
 START_TEST(test_resolv_internet)
 {
     int ret = EOK;
@@ -721,14 +779,142 @@ done:
 }
 END_TEST
 
+START_TEST(test_cached_init_shutdown)
+{
+    struct cached_resolv_ctx *ctx;
+    struct resolv_test_ctx *test_ctx;
+    errno_t ret;
+
+    ret = setup_resolv_test(&test_ctx);
+    if (ret != EOK) {
+        fail("Could not set up test");
+        return;
+    }
+
+    check_leaks_push(test_ctx);
+
+    ctx = cres_init(test_ctx, test_ctx->resolv);
+    fail_if(ctx == NULL);
+    talloc_free(ctx);
+
+    check_leaks_pop(test_ctx);
+
+    talloc_free(test_ctx);
+}
+END_TEST
+
+START_TEST(test_cached_resolv_internet)
+{
+    int ret;
+    struct tevent_req *req;
+    const char *hostname = "redhat.com";
+    struct resolv_test_ctx *test_ctx;
+
+    ret = setup_cached_resolv_test(&test_ctx);
+    if (ret != EOK) {
+        fail("Could not set up test");
+        return;
+    }
+    test_ctx->tested_function = TESTING_HOSTNAME;
+
+    check_leaks_push(test_ctx->cctx);
+
+    req = cres_gethostbyname_send(test_ctx->cctx, test_ctx->ev, test_ctx->cctx,
+                                  hostname, IPV4_FIRST, default_host_dbs);
+    DEBUG(SSSDBG_TRACE_INTERNAL, ("Sent cres_gethostbyname\n"));
+    if (req == NULL) {
+        ret = ENOMEM;
+    }
+
+    if (ret == EOK) {
+        tevent_req_set_callback(req, test_cached_internet, test_ctx);
+        ret = test_loop(test_ctx);
+    }
+
+    fail_unless(ret == EOK);
+    test_ctx->done = false;
+
+    /* This request will return from cache */
+    req = cres_gethostbyname_send(test_ctx->cctx, test_ctx->ev, test_ctx->cctx,
+                                  hostname, IPV4_FIRST, default_host_dbs);
+    DEBUG(SSSDBG_TRACE_INTERNAL, ("Sent cres_gethostbyname\n"));
+    if (req == NULL) {
+        ret = ENOMEM;
+    }
+
+    if (ret == EOK) {
+        tevent_req_set_callback(req, test_cached_internet, test_ctx);
+        ret = test_loop(test_ctx);
+    }
+
+    fail_unless(ret == EOK);
+    cres_reset(test_ctx->cctx);
+    check_leaks_pop(test_ctx->cctx);
+    talloc_free(test_ctx);
+}
+END_TEST
+
+START_TEST(test_cached_negative_internet)
+{
+    int ret;
+    struct tevent_req *req;
+    const char *bad_hostname = "nosuchhost.com";
+    struct resolv_test_ctx *test_ctx;
+
+    ret = setup_cached_resolv_test(&test_ctx);
+    if (ret != EOK) {
+        fail("Could not set up test");
+        return;
+    }
+    test_ctx->tested_function = TESTING_HOSTNAME;
+
+    check_leaks_push(test_ctx->cctx);
+
+    req = cres_gethostbyname_send(test_ctx->cctx, test_ctx->ev, test_ctx->cctx,
+                                  bad_hostname, IPV4_FIRST, default_host_dbs);
+    DEBUG(SSSDBG_TRACE_INTERNAL, ("Sent cres_gethostbyname\n"));
+    if (req == NULL) {
+        fail("Out of memory\n");
+        return;
+    }
+
+    test_ctx->negative = true;
+    tevent_req_set_callback(req, test_cached_internet, test_ctx);
+
+    ret = test_loop(test_ctx);
+    fail_unless(ret == ENOENT);
+
+    test_ctx->done = false;
+
+    /* This request will return from negative cache */
+    req = cres_gethostbyname_send(test_ctx->cctx, test_ctx->ev, test_ctx->cctx,
+                                  bad_hostname, IPV4_FIRST, default_host_dbs);
+    DEBUG(SSSDBG_TRACE_INTERNAL, ("Sent cres_gethostbyname\n"));
+    if (req == NULL) {
+        fail("Out of memory\n");
+        return;
+    }
+
+    test_ctx->negative = true;
+    tevent_req_set_callback(req, test_cached_internet, test_ctx);
+
+    ret = test_loop(test_ctx);
+    fail_unless(ret == ENOENT);
+
+    cres_reset(test_ctx->cctx);
+    check_leaks_pop(test_ctx->cctx);
+    talloc_free(test_ctx);
+}
+END_TEST
+
 Suite *create_resolv_suite(void)
 {
     Suite *s = suite_create("resolv");
 
     TCase *tc_resolv = tcase_create("RESOLV Tests");
+    TCase *tc_cached_resolv = tcase_create("CACHED RESOLV Tests");
 
     tcase_add_checked_fixture(tc_resolv, leak_check_setup, leak_check_teardown);
-    /* Do some testing */
     tcase_add_test(tc_resolv, test_copy_hostent);
     tcase_add_test(tc_resolv, test_resolv_ip_addr);
     tcase_add_test(tc_resolv, test_resolv_sort_srv_reply);
@@ -746,8 +932,18 @@ Suite *create_resolv_suite(void)
     tcase_add_test(tc_resolv, test_resolv_free_context);
     tcase_add_test(tc_resolv, test_resolv_free_req);
 
+    tcase_add_checked_fixture(tc_cached_resolv, leak_check_setup, leak_check_teardown);
+    tcase_add_test(tc_cached_resolv, test_cached_init_shutdown);
+    if (use_net_test) {
+        tcase_add_test(tc_cached_resolv, test_cached_resolv_internet);
+        tcase_add_test(tc_cached_resolv, test_cached_negative_internet);
+    }
+
     /* Add all test cases to the test suite */
+#if 0
     suite_add_tcase(s, tc_resolv);
+#endif
+    suite_add_tcase(s, tc_cached_resolv);
 
     return s;
 }
@@ -759,11 +955,10 @@ int main(int argc, const char *argv[])
     int failure_count;
     Suite *resolv_suite;
     SRunner *sr;
-    int debug = 0;
 
     struct poptOption long_options[] = {
         POPT_AUTOHELP
-        { "debug-level", 'd', POPT_ARG_INT, &debug, 0, "Set debug level", NULL },
+        { "debug-level", 'd', POPT_ARG_INT, &debug_level, 0, "Set debug level", NULL },
         { "use-net-test", 'n', POPT_ARG_NONE, 0, 'n', "Run tests that need an active internet connection", NULL },
         { "txt-host", 't', POPT_ARG_STRING, 0, 't', "Specify the host used for TXT record testing", NULL },
         { "srv-host", 's', POPT_ARG_STRING, 0, 's', "Specify the host used for SRV record testing", NULL },
