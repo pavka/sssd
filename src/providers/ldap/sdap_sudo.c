@@ -146,6 +146,12 @@ void sdap_sudo_connect_done(struct tevent_req *subreq)
 
     DEBUG(SSSDBG_TRACE_FUNC, ("SUDO LDAP connection successful\n"));
 
+    ret = sdap_sudo_purge_sudoers(sudo_ctx);
+    if (ret != EOK) {
+        DEBUG(SSSDBG_CRIT_FAILURE, ("Unable to purge sudoers cache\n"));
+        goto fail;
+    }
+
     ret = sdap_sudo_load_sudoers(sudo_ctx);
     if (ret != EOK) {
         goto fail;
@@ -162,6 +168,9 @@ int sdap_sudo_load_sudoers(struct sdap_sudo_ctx *sudo_ctx)
     struct tevent_req *subreq = NULL;
     struct be_ctx *be_ctx = sudo_ctx->be_ctx;
     struct sdap_id_ctx *sdap_ctx = sudo_ctx->sdap_ctx;
+    struct sdap_search_base *search_base = NULL;
+    struct sdap_search_base **search_bases = NULL;
+    const char *filter = NULL;
     static const char *attrs[] = {
         SDAP_SUDO_ATTR_CN,
         SDAP_SUDO_ATTR_USER,
@@ -176,28 +185,41 @@ int sdap_sudo_load_sudoers(struct sdap_sudo_ctx *sudo_ctx)
         NULL
     };
 
-    /*
-     * TODO
-     *  - support multiple search bases
-     *  - SDAP_ENUM_SEARCH_TIMEOUT specific for sudo?
-     */
-    subreq = sdap_get_generic_send(sudo_ctx,
-                                   be_ctx->ev,
-                                   sdap_ctx->opts,
-                                   sdap_id_op_handle(sudo_ctx->sdap_op),
-                                   "dc=sudo,dc=redhat,dc=com",
-                                   LDAP_SCOPE_SUB,
-                                   SDAP_SUDO_FILTER,
-                                   attrs,
-                                   NULL, /* map */
-                                   0,    /* num map */
-                                   dp_opt_get_int(sdap_ctx->opts->basic,
-                                                  SDAP_ENUM_SEARCH_TIMEOUT));
-    if (subreq == NULL) {
-        return EIO;
-    }
+    for (search_bases = sdap_ctx->opts->sudo_search_bases;
+         *search_bases != NULL; search_bases++) {
+        search_base = *search_bases;
 
-    tevent_req_set_callback(subreq, sdap_sudo_load_sudoers_done, sudo_ctx);
+        if (search_base->filter != NULL) {
+            filter = talloc_asprintf(sudo_ctx, "(&%s" SDAP_SUDO_FILTER ")",
+                                     search_base->filter);
+            if (filter == NULL) {
+                DEBUG(SSSDBG_CRIT_FAILURE, ("talloc_asprintf() failed\n"));
+                return ENOMEM;
+            }
+        } else {
+            filter = talloc_strdup(sudo_ctx, SDAP_SUDO_FILTER);
+        }
+
+        DEBUG(0, ("\n\n\nFilter: %s\n\n\n", filter));
+
+        subreq = sdap_get_generic_send(sudo_ctx,
+                                       be_ctx->ev,
+                                       sdap_ctx->opts,
+                                       sdap_id_op_handle(sudo_ctx->sdap_op),
+                                       search_base->basedn,
+                                       search_base->scope,
+                                       filter,
+                                       attrs,
+                                       NULL, /* map */
+                                       0,    /* num map */
+                                       dp_opt_get_int(sdap_ctx->opts->basic,
+                                                      SDAP_ENUM_SEARCH_TIMEOUT));
+        if (subreq == NULL) {
+            return EIO;
+        }
+
+        tevent_req_set_callback(subreq, sdap_sudo_load_sudoers_done, sudo_ctx);
+    }
 
     return EOK;
 }
@@ -215,12 +237,6 @@ void sdap_sudo_load_sudoers_done(struct tevent_req *subreq)
 
     ret = sdap_get_generic_recv(subreq, sudo_ctx, &replies_count, &replies);
     if (ret != EOK) {
-        goto fail;
-    }
-
-    ret = sdap_sudo_purge_sudoers(sudo_ctx);
-    if (ret != EOK) {
-        DEBUG(SSSDBG_CRIT_FAILURE, ("Unable to purge sudoers cache\n"));
         goto fail;
     }
 
