@@ -463,10 +463,6 @@ static int server_common_destructor(void *memptr)
     struct server_common *common;
 
     common = talloc_get_type(memptr, struct server_common);
-    if (common->request_list) {
-        DEBUG(1, ("BUG: pending requests still associated with this server\n"));
-        return -1;
-    }
     DLIST_REMOVE(common->ctx->server_common_list, common);
 
     return 0;
@@ -491,7 +487,6 @@ create_server_common(TALLOC_CTX *mem_ctx, struct fo_ctx *ctx, const char *name)
     common->prev = NULL;
     common->next = NULL;
     common->rhostent = NULL;
-    common->request_list = NULL;
     common->server_status = DEFAULT_SERVER_STATUS;
     common->last_status_change.tv_sec = 0;
     common->last_status_change.tv_usec = 0;

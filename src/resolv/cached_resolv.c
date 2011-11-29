@@ -28,10 +28,24 @@
 
 #define NCACHE_TIMEOUT  30
 
+/* FIXME - use talloc_get_type instead of pure typing? */
+/* FIXME - use object-like structure for hostname, txt, srv
+ * with all the functions for compare etc. ?? */
+
 enum resolv_item {
     RESOLV_HOSTBYNAME,
     RESOLV_SRV,
     RESOLV_TXT
+};
+
+struct resolve_request {
+    struct resolve_request *prev;
+    struct resolve_request *next;
+
+    struct cached_resolv_ctx *ctx;
+
+    void *data;
+    struct tevent_req *req;
 };
 
 struct cache_item {
@@ -39,7 +53,6 @@ struct cache_item {
     struct cache_item *prev;
 
     struct cached_resolv_ctx *ctx;
-    /* FIXME - struct resolve_service_request *request_list;*/
 
     time_t cache_in;
     union {
@@ -50,6 +63,8 @@ struct cache_item {
 
 struct cached_resolv_ctx {
     struct resolv_ctx *res;
+    struct resolve_request *request_list;
+
     struct cache_item *cache;
     struct cache_item *ncache;
 };
@@ -160,7 +175,7 @@ _cres_cache_enter(struct cached_resolv_ctx *cctx, struct cache_item **cptr,
                       "negative", ncache_item_destructor, (data))
 
 typedef bool (*ttl_check_fn_t)(const void *, time_t, time_t);
-typedef bool (*cache_item_cmp_fn_t)(const void *, const void *);
+typedef bool (*cache_item_cmp_fn_t)(const void *, const struct cache_item *);
 
 static struct cache_item *
 _cres_cache_check(struct cache_item *cache,
@@ -198,6 +213,56 @@ _cres_cache_check(struct cache_item *cache,
 #define cres_ncache_check(ctx, item_type, is_valid, cmp_item, data) \
     _cres_cache_check(ctx->ncache, item_type, is_valid, cmp_item, data)
 
+static int
+resolve_request_destructor(struct resolve_request *request)
+{
+    DLIST_REMOVE(request->ctx->request_list, request);
+    return 0;
+}
+
+static errno_t
+set_lookup_hook(struct cached_resolv_ctx *ctx,
+                struct tevent_req *req, void *data)
+{
+    struct resolve_request *request;
+
+    request = talloc(req, struct resolve_request);
+    if (request == NULL) {
+        talloc_free(request);
+        return ENOMEM;
+    }
+
+    request->data = data;
+    request->req = req;
+
+    DLIST_ADD(ctx->request_list, request);
+    talloc_set_destructor(request, resolve_request_destructor);
+    return EOK;
+}
+
+typedef bool (*request_cmp_fn_t)(const void *, const struct resolve_request *);
+
+static errno_t
+request_notify(struct cached_resolv_ctx *ctx,
+               request_cmp_fn_t cmp_request,
+               const void *data, int status)
+{
+    struct resolve_request *request;
+
+    DLIST_FOR_EACH(request, ctx->request_list) {
+        DLIST_REMOVE(ctx->request_list, request);
+        if (cmp_request(request, data) == true) {
+            if  (status == EOK) {
+                tevent_req_done(request->req);
+            } else {
+                tevent_req_error(request->req, status);
+            }
+        }
+    }
+
+    return EOK;
+}
+
 static bool
 resolv_hostent_ttl_hit(const void *item, time_t cache_in, time_t now)
 {
@@ -210,20 +275,27 @@ resolv_hostent_ttl_hit(const void *item, time_t cache_in, time_t now)
     if (!rhostent || !rhostent->addr_list) return false;
 
     for (i=0; rhostent->addr_list[i]; i++) {
-        if (rhostent->addr_list[i]->ttl < now - cache_in) return false;
+        if (rhostent->addr_list[i]->ttl < now - cache_in) {
+            return false;
+        }
     }
 
     return true;
 }
 
 static bool
-resolv_hostent_cmp(const void *data, const void *item)
+resolv_hostent_cmp(const void *data, const struct cache_item *cache_item)
 {
-    const struct cache_item *cache_item = (const struct cache_item *) item;
-
     if (cache_item->item_type != RESOLV_HOSTBYNAME) return false;
 
     return strcasecmp((const char *) data, cache_item->data.hcache->name) == 0;
+}
+
+static bool
+hostname_notify_request_cmp(const void *data,
+                            const struct resolve_request *request)
+{
+    return strcasecmp((const char *) data, (const char *) request->data) == 0;
 }
 
 struct cres_gethostbyname_state {
@@ -367,8 +439,8 @@ cres_gethostbyname_done(struct tevent_req *subreq)
         if (cret != EOK) {
             DEBUG(SSSDBG_OP_FAILURE, ("cache_enter failed (%d): %s\n",
                   cret, strerror(cret)));
-            tevent_req_error(req, cret);
-            return;
+            ret = cret;
+            goto notify;
         }
     } else if (ret == ENOENT) {
         DEBUG(SSSDBG_TRACE_FUNC, ("putting %s into negative cache\n",
@@ -377,27 +449,24 @@ cres_gethostbyname_done(struct tevent_req *subreq)
         neg = get_negative_rhostent(state->ctx->ncache, state->name);
         if (!neg) {
             DEBUG(SSSDBG_CRIT_FAILURE, ("get_negative_rhostent failed\n"));
-            tevent_req_error(req, ENOMEM);
-            return;
+            ret = ENOMEM;
+            goto notify;
         }
 
         cret = cres_ncache_enter(state->ctx, RESOLV_HOSTBYNAME, neg);
         if (cret != EOK) {
             DEBUG(SSSDBG_OP_FAILURE, ("negaive cache_enter failed (%d): %s\n",
                   cret, strerror(cret)));
-            tevent_req_error(req, cret);
-            return;
+            ret = cret;
+            goto notify;
         }
     }
 
-    /* We still want to report ENOENT when we can't resolve a host name */
-    if (ret != EOK) {
-        tevent_req_error(req, ret);
-        return;
-    }
-
-    DEBUG(SSSDBG_TRACE_INTERNAL, ("cached resolv done\n"));
-    tevent_req_done(req);
+notify:
+    DEBUG(SSSDBG_TRACE_INTERNAL, ("cached resolv: %s\n",
+          ret == EOK ? "done" : strerror(ret)));
+    /* Notify all the requests, including self */
+    request_notify(state->ctx, hostname_notify_request_cmp, state->name, ret);
 }
 
 int
