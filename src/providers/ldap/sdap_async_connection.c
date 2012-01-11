@@ -99,8 +99,14 @@ struct tevent_req *sdap_connect_send(TALLOC_CTX *memctx,
 
     state->ev = ev;
     state->opts = opts;
-    state->uri = uri;
     state->use_start_tls = use_start_tls;
+
+    state->uri = talloc_asprintf(state, "%s", uri);
+    if (!state->uri) {
+        talloc_zfree(req);
+        return NULL;
+    }
+
     state->sh = sdap_handle_create(state);
     if (!state->sh) {
         talloc_zfree(req);
@@ -110,7 +116,7 @@ struct tevent_req *sdap_connect_send(TALLOC_CTX *memctx,
     state->sh->page_size = dp_opt_get_int(state->opts->basic,
                                           SDAP_PAGE_SIZE);
 
-    subreq = sss_ldap_init_send(state, ev, uri, sockaddr,
+    subreq = sss_ldap_init_send(state, ev, state->uri, sockaddr,
                                 sizeof(struct sockaddr_storage));
     if (subreq == NULL) {
         ret = ENOMEM;
