@@ -256,3 +256,55 @@ int rotate_debug_files(void)
 
     return open_debug_file();
 }
+
+int reopen_stderr_for_libldap(const char *filename)
+{
+    int ret;
+    char *logpath;
+    const char *log_file;
+    FILE *new_stderr;
+    TALLOC_CTX *tmp_ctx;
+
+    if (!debug_to_file) return EOK;
+
+    tmp_ctx = talloc_new(NULL);
+    if (!tmp_ctx) return ENOMEM;
+
+    log_file = filename ? filename : debug_log_file;
+
+    logpath = talloc_asprintf(tmp_ctx, "%s/%s.log", LOG_PATH, log_file);
+    if (logpath == NULL) {
+        ret = ENOMEM;
+        goto done;
+    }
+
+    fclose(stderr);
+    new_stderr = freopen(logpath, "a", stderr);
+    if (!new_stderr) {
+        ret = errno;
+        DEBUG(1, ("Couldn't reopen stderr to logfile\n"));
+        goto done;
+    }
+
+    ret = EOK;
+done:
+    talloc_free(tmp_ctx);
+    return ret;
+}
+
+int reopen_stderr_after_libldap(void)
+{
+    FILE *new_stderr;
+    int ret;
+
+    if (!debug_to_file) return EOK;
+
+    new_stderr = freopen("/dev/null", "a", stderr);
+    if (!new_stderr) {
+        ret = errno;
+        DEBUG(1, ("Couldn't reopen stderr to logfile\n"));
+        return ret;
+    }
+
+    return EOK;
+}

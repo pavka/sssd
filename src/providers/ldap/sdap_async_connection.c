@@ -70,6 +70,7 @@ struct sdap_connect_state {
 
     struct sdap_msg *reply;
     int result;
+    int old_ldap_debug;
 };
 
 static void sdap_sys_connect_done(struct tevent_req *subreq);
@@ -127,6 +128,12 @@ struct tevent_req *sdap_connect_send(TALLOC_CTX *memctx,
         ret = ENOMEM;
         DEBUG(1, ("sss_ldap_init_send failed.\n"));
         goto fail;
+    }
+
+    ret = sss_ldap_set_debug(&state->old_ldap_debug);
+    if (ret != EOK) {
+        DEBUG(2, ("Could not set extra LDAP debugging\n"));
+        /* Not fatal, carry on */
     }
 
     tevent_req_set_callback(subreq, sdap_sys_connect_done, req);
@@ -423,6 +430,8 @@ int sdap_connect_recv(struct tevent_req *req,
 {
     struct sdap_connect_state *state = tevent_req_data(req,
                                                   struct sdap_connect_state);
+
+    sss_ldap_reset_debug(state->old_ldap_debug);
 
     TEVENT_REQ_RETURN_ON_ERROR(req);
 

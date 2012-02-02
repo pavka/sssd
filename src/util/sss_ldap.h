@@ -76,4 +76,7 @@ bool sss_ldap_dn_in_search_bases(TALLOC_CTX *mem_ctx,
                                  struct sdap_search_base **search_bases,
                                  char **_filter);
 
+int sss_ldap_set_debug(int *old_debug);
+int sss_ldap_reset_debug(int ldap_old_debug);
+
 #endif /* __SSS_LDAP_H__ */

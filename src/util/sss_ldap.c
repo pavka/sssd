@@ -590,3 +590,84 @@ done:
     talloc_free(filter);
     return ret;
 }
+
+int sss_ldap_set_debug(int *old_debug)
+{
+    const char *dbg;
+    static const char dbg_var[] = "SSSD_DEBUG_LDAP_SEARCH";
+    int ret;
+    int new_debug;
+    int ldap_old_debug;
+    char *endptr;
+
+    dbg = getenv(dbg_var);
+    if (!dbg){
+        DEBUG(7, ("No extra LDAP debugging set\n"));
+        return EOK;
+    }
+
+    errno = 0;
+    new_debug = strtol(dbg, &endptr, 0);
+    if (errno != 0) {
+        ret = errno;
+        DEBUG(1, ("strtol failed on [%s]: [%d][%s].\n", dbg,
+                  ret, strerror(ret)));
+        return ret;
+    }
+
+    if (*endptr != '\0') {
+        DEBUG(1, ("Found additional characters [%s] in debug level"
+                  "[%s].\n", endptr, dbg));
+        return EINVAL;
+    }
+
+    ret = reopen_stderr_for_libldap(NULL);
+    if (ret != EOK) {
+        DEBUG(4, ("Could not redirect stderr to log file\n"));
+        return ret;
+    }
+
+    ret = ldap_get_option(NULL, LDAP_OPT_DEBUG_LEVEL,
+                          &ldap_old_debug);
+    if (ret != LDAP_OPT_SUCCESS) {
+        DEBUG(3, ("Could not save old LDAP debug level\n"));
+        return EIO;
+    }
+
+    DEBUG(8, ("LDAP debug level was %#X setting to %#X\n",
+              ldap_old_debug, new_debug));
+
+    ret = ldap_set_option(NULL, LDAP_OPT_DEBUG_LEVEL,
+                          &new_debug);
+    if (ret != LDAP_OPT_SUCCESS) {
+        DEBUG(3, ("Could not set LDAP debugging\n"));
+        return EIO;
+    }
+
+    if (old_debug) *old_debug = ldap_old_debug;
+
+    return EOK;
+}
+
+int sss_ldap_reset_debug(int ldap_old_debug)
+{
+    int ret;
+
+    ret = reopen_stderr_after_libldap();
+    if (ret != EOK) {
+        DEBUG(4, ("Could not redirect stderr back to /dev/null\n"));
+        return ret;
+    }
+
+    ret = ldap_set_option(NULL, LDAP_OPT_DEBUG_LEVEL,
+                          &ldap_old_debug);
+    if (ret != LDAP_SUCCESS) {
+        DEBUG(3, ("Could not reset LDAP debugging\n"));
+        return EIO;
+    }
+
+    DEBUG(8, ("Resetting LDAP debug level to %#X\n",
+              ldap_old_debug));
+
+    return EOK;
+}
