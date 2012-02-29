@@ -32,5 +32,6 @@ setup(
     'SSSDConfig',
     'ipachangeconf',
     'sssd_upgrade_config',
+    'sssd_update_debug_levels',
     ],
 )
