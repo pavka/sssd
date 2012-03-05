@@ -47,9 +47,13 @@ struct krb5child_req {
     const char *upn;
     uid_t uid;
     gid_t gid;
+
     bool is_offline;
+    struct be_fo_lookup *srv_lookup;
     struct fo_server *srv;
+    struct be_fo_lookup *kpasswd_lookup;
     struct fo_server *kpasswd_srv;
+
     bool active_ccache_present;
     bool valid_tgt_present;
     bool run_as_user;

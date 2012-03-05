@@ -458,10 +458,14 @@ struct auth_state {
     void *pw_expire_data;
 
     struct fo_server *srv;
+    struct be_fo_lookup *server_lookup;
 };
 
 static struct tevent_req *auth_get_server(struct tevent_req *req);
-static void auth_resolve_done(struct tevent_req *subreq);
+static struct tevent_req *auth_get_next_server(struct tevent_req *req);
+static void auth_resolve_service_done(struct tevent_req *subreq);
+static void auth_resolve_server_done(struct tevent_req *subreq);
+static void auth_connect_step(const errno_t rret, struct tevent_req *req);
 static void auth_connect_done(struct tevent_req *subreq);
 static void auth_bind_user_done(struct tevent_req *subreq);
 
@@ -514,31 +518,38 @@ static struct tevent_req *auth_get_server(struct tevent_req *req)
 
      /* NOTE: this call may cause service->uri to be refreshed
       * with a new valid server. Do not use service->uri before */
-    next_req = be_resolve_server_send(state,
-                                      state->ev,
-                                      state->ctx->be,
-                                      state->sdap_service->name);
+    next_req = be_resolve_service_send(state, state->ev,
+                                       state->ctx->be,
+                                       state->sdap_service->name);
     if (!next_req) {
         DEBUG(1, ("be_resolve_server_send failed.\n"));
         return NULL;
     }
 
-    tevent_req_set_callback(next_req, auth_resolve_done, req);
+    tevent_req_set_callback(next_req, auth_resolve_service_done, req);
     return next_req;
 }
 
-static void auth_resolve_done(struct tevent_req *subreq)
+static void auth_resolve_service_done(struct tevent_req *subreq)
 {
     struct tevent_req *req = tevent_req_callback_data(subreq,
                                                       struct tevent_req);
     struct auth_state *state = tevent_req_data(req,
                                                     struct auth_state);
-    int ret;
+    errno_t ret;
+
+    ret = be_resolve_service_recv(state, subreq, &state->server_lookup, &state->srv);
+    talloc_zfree(subreq);
+    return auth_connect_step(ret, req);
+}
+
+static void auth_connect_step(const errno_t rret, struct tevent_req *req)
+{
+    struct auth_state *state = tevent_req_data(req, struct auth_state);
+    struct tevent_req *subreq;
     bool use_tls;
 
-    ret = be_resolve_server_recv(subreq, &state->srv);
-    talloc_zfree(subreq);
-    if (ret) {
+    if (rret) {
         /* all servers have been tried and none
          * was found good, go offline */
         tevent_req_error(req, ETIMEDOUT);
@@ -547,11 +558,11 @@ static void auth_resolve_done(struct tevent_req *subreq)
 
     /* Determine whether we need to use TLS */
     if (sdap_is_secure_uri(state->ctx->service->uri)) {
-        DEBUG(8, ("[%s] is a secure channel. No need to run START_TLS\n",
-                  state->ctx->service->uri));
+        DEBUG(SSSDBG_TRACE_LIBS,
+              ("[%s] is a secure channel. No need to run START_TLS\n",
+              state->ctx->service->uri));
         use_tls = false;
     } else {
-
         /* Check for undocumented debugging feature to disable TLS
          * for authentication. This should never be used in production
          * for obvious reasons.
@@ -591,7 +602,7 @@ static void auth_connect_done(struct tevent_req *subreq)
             fo_set_port_status(state->srv, PORT_NOT_WORKING);
         }
         if (ret == ETIMEDOUT) {
-            if (auth_get_server(req) == NULL) {
+            if (auth_get_next_server(req) == NULL) {
                 tevent_req_error(req, ENOMEM);
             }
             return;
@@ -620,6 +631,39 @@ static void auth_connect_done(struct tevent_req *subreq)
     }
 
     tevent_req_set_callback(subreq, auth_bind_user_done, req);
+}
+
+static struct tevent_req *auth_get_next_server(struct tevent_req *req)
+{
+    struct tevent_req *next_req;
+    struct auth_state *state = tevent_req_data(req,
+                                               struct auth_state);
+
+     /* NOTE: this call may cause service->uri to be refreshed
+      * with a new valid server. Do not use service->uri before */
+    next_req = be_resolve_server_send(state, state->ev,
+                                      state->ctx->be,
+                                      state->server_lookup);
+    if (!next_req) {
+        DEBUG(1, ("be_resolve_server_send failed.\n"));
+        return NULL;
+    }
+
+    tevent_req_set_callback(next_req, auth_resolve_server_done, req);
+    return next_req;
+}
+
+static void auth_resolve_server_done(struct tevent_req *subreq)
+{
+    struct tevent_req *req = tevent_req_callback_data(subreq,
+                                                      struct tevent_req);
+    struct auth_state *state = tevent_req_data(req,
+                                                    struct auth_state);
+    errno_t ret;
+
+    ret = be_resolve_server_recv(subreq, &state->srv);
+    talloc_zfree(subreq);
+    return auth_connect_step(ret, req);
 }
 
 static void auth_bind_user_done(struct tevent_req *subreq)

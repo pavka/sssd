@@ -204,10 +204,22 @@ int be_fo_add_srv_server(struct be_ctx *ctx,
 int be_fo_add_server(struct be_ctx *ctx, const char *service_name,
                      const char *server, int port, void *user_data);
 
+struct be_fo_lookup;
+
+struct tevent_req *be_resolve_service_send(TALLOC_CTX *memctx,
+                                           struct tevent_context *ev,
+                                           struct be_ctx *ctx,
+                                           const char *service_name);
+errno_t
+be_resolve_service_recv(TALLOC_CTX *mem_ctx, struct tevent_req *req,
+                        struct be_fo_lookup **lookup, struct fo_server **srv);
+struct fo_server *
+be_fo_get_lookup_server(struct be_fo_lookup *lookup);
+
 struct tevent_req *be_resolve_server_send(TALLOC_CTX *memctx,
                                           struct tevent_context *ev,
                                           struct be_ctx *ctx,
-                                          const char *service_name);
+                                          struct be_fo_lookup *lookup);
 int be_resolve_server_recv(struct tevent_req *req, struct fo_server **srv);
 /*
  * Instruct fail-over to try next server on the next connect attempt.

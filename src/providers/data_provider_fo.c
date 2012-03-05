@@ -333,14 +333,110 @@ int be_fo_add_server(struct be_ctx *ctx, const char *service_name,
     return EOK;
 }
 
+struct be_fo_lookup {
+    const char *service_name;
+    struct be_svc_data *svc;
+
+    int attempts;
+
+    struct fo_server *current;
+    struct fo_server *first;
+};
+
+struct be_resolve_service_state {
+    struct be_fo_lookup *lookup;
+};
+
+static void be_resolve_service_done(struct tevent_req *subreq);
+
+struct tevent_req *be_resolve_service_send(TALLOC_CTX *memctx,
+                                           struct tevent_context *ev,
+                                           struct be_ctx *ctx,
+                                           const char *service_name)
+{
+    struct tevent_req *req, *subreq;
+    struct be_resolve_service_state *state;
+    errno_t ret;
+
+    req = tevent_req_create(memctx, &state, struct be_resolve_service_state);
+    if (!req) return NULL;
+
+    state->lookup = talloc_zero(state, struct be_fo_lookup);
+    if (!state->lookup) {
+        ret = ENOMEM;
+        goto fail;
+    }
+
+    state->lookup->attempts = 0;
+
+    state->lookup->service_name = talloc_strdup(state->lookup, service_name);
+    if (!state->lookup->service_name) {
+        ret = ENOMEM;
+        goto fail;
+    }
+
+    state->lookup->svc = be_fo_find_svc_data(ctx, service_name);
+    if (!state->lookup->svc) {
+        ret = EINVAL;
+        goto fail;
+    }
+
+    subreq = be_resolve_server_send(state, ev, ctx, state->lookup);
+    if (!subreq) {
+        ret = EIO;
+        goto fail;
+    }
+    tevent_req_set_callback(subreq, be_resolve_service_done, req);
+
+fail:
+    tevent_req_error(req, ret);
+    tevent_req_post(req, ev);
+    return req;
+}
+
+static void
+be_resolve_service_done(struct tevent_req *subreq)
+{
+    struct tevent_req *req = tevent_req_callback_data(subreq,
+                                                      struct tevent_req);
+    errno_t ret;
+
+    ret = be_resolve_server_recv(subreq, NULL);
+    if (ret != EOK) {
+        DEBUG(SSSDBG_MINOR_FAILURE, ("Cannot resolve service [%d]: %s\n",
+              ret, strerror(ret)));
+        tevent_req_error(req, EIO);
+        return;
+    }
+
+    tevent_req_done(req);
+}
+
+errno_t
+be_resolve_service_recv(TALLOC_CTX *mem_ctx, struct tevent_req *req,
+                        struct be_fo_lookup **lookup, struct fo_server **srv)
+{
+    struct be_resolve_service_state *state = tevent_req_data(req,
+                                             struct be_resolve_service_state);
+    TEVENT_REQ_RETURN_ON_ERROR(req);
+
+    if (lookup) {
+        *lookup = state->lookup;
+    }
+
+    if (srv) {
+        *srv = state->lookup->current;
+    }
+
+    return EOK;
+}
+
 struct be_resolve_server_state {
     struct tevent_context *ev;
     struct be_ctx *ctx;
 
     struct be_svc_data *svc;
-    int attempts;
-
-    struct fo_server *srv;
+    struct be_fo_lookup *lookup;
 };
 
 static void be_resolve_server_done(struct tevent_req *subreq);
@@ -348,32 +444,23 @@ static void be_resolve_server_done(struct tevent_req *subreq);
 struct tevent_req *be_resolve_server_send(TALLOC_CTX *memctx,
                                           struct tevent_context *ev,
                                           struct be_ctx *ctx,
-                                          const char *service_name)
+                                          struct be_fo_lookup *lookup)
 {
     struct tevent_req *req, *subreq;
     struct be_resolve_server_state *state;
-    struct be_svc_data *svc;
 
     req = tevent_req_create(memctx, &state, struct be_resolve_server_state);
     if (!req) return NULL;
 
     state->ev = ev;
     state->ctx = ctx;
-
-    svc = be_fo_find_svc_data(ctx, service_name);
-    if (NULL == svc) {
-        tevent_req_error(req, EINVAL);
-        tevent_req_post(req, ev);
-        return req;
-    }
-
-    state->svc = svc;
-    state->attempts = 0;
+    state->lookup = lookup;
+    state->svc = lookup->svc;
 
     subreq = fo_resolve_service_send(state, ev,
                                      ctx->be_fo->resolv,
                                      ctx->be_fo->fo_ctx,
-                                     svc->fo_service);
+                                     state->svc->fo_service);
     if (!subreq) {
         talloc_zfree(req);
         return NULL;
@@ -392,12 +479,13 @@ static void be_resolve_server_done(struct tevent_req *subreq)
     struct be_svc_callback *callback;
     int ret;
     time_t srv_status_change;
+    struct fo_server *srv;
 
-    ret = fo_resolve_service_recv(subreq, &state->srv);
+    ret = fo_resolve_service_recv(subreq, &srv);
     talloc_zfree(subreq);
     switch (ret) {
     case EOK:
-        if (!state->srv) {
+        if (!srv) {
             tevent_req_error(req, EFAULT);
             return;
         }
@@ -411,15 +499,15 @@ static void be_resolve_server_done(struct tevent_req *subreq)
 
     default:
         /* mark server as bad and retry */
-        if (!state->srv) {
+        if (!srv) {
             tevent_req_error(req, EFAULT);
             return;
         }
         DEBUG(6, ("Couldn't resolve server (%s), resolver returned (%d)\n",
-                  fo_get_server_str_name(state->srv), ret));
+                  fo_get_server_str_name(srv), ret));
 
-        state->attempts++;
-        if (state->attempts >= 10) {
+        state->lookup->attempts++;
+        if (state->lookup->attempts >= 10) {
             DEBUG(2, ("Failed to find a server after 10 attempts\n"));
             tevent_req_error(req, EIO);
             return;
@@ -442,13 +530,28 @@ static void be_resolve_server_done(struct tevent_req *subreq)
 
     /* all fine we got the server */
 
-    if (DEBUG_IS_SET(SSSDBG_CONF_SETTINGS) && fo_get_server_name(state->srv)) {
+    /* Check if we looped around the server list */
+    if (state->lookup->first == NULL) {
+        state->lookup->first = srv;
+        DEBUG(SSSDBG_TRACE_INTERNAL, ("Setting the first seen server to %s\n",
+              fo_get_server_str_name(state->lookup->first)));
+    } else {
+        if (srv == state->lookup->first) {
+            DEBUG(SSSDBG_MINOR_FAILURE, ("This server has already been "
+                  "resolved. No servers are available\n"));
+            tevent_req_error(req, EIO);
+        }
+    }
+
+    state->lookup->current = srv;
+
+    if (DEBUG_IS_SET(SSSDBG_CONF_SETTINGS) && fo_get_server_name(srv)) {
         struct resolv_hostent *srvaddr;
         char ipaddr[128];
-        srvaddr = fo_get_server_hostent(state->srv);
+        srvaddr = fo_get_server_hostent(srv);
         if (!srvaddr) {
             DEBUG(3, ("FATAL: No hostent available for server (%s)\n",
-                      fo_get_server_str_name(state->srv)));
+                      fo_get_server_str_name(srv)));
             tevent_req_error(req, EFAULT);
             return;
         }
@@ -457,23 +560,23 @@ static void be_resolve_server_done(struct tevent_req *subreq)
                   ipaddr, 128);
 
         DEBUG(4, ("Found address for server %s: [%s] TTL %d\n",
-                fo_get_server_str_name(state->srv), ipaddr,
+                fo_get_server_str_name(srv), ipaddr,
                 srvaddr->addr_list[0]->ttl));
     }
 
-    srv_status_change = fo_get_server_hostname_last_change(state->srv);
+    srv_status_change = fo_get_server_hostname_last_change(srv);
 
     /* now call all svc callbacks if server changed or if it is explicitly
      * requested or if the server is the same but changed status since last time*/
-    if (state->srv != state->svc->last_good_srv ||
+    if (srv != state->svc->last_good_srv ||
         state->svc->run_callbacks ||
         srv_status_change > state->svc->last_status_change) {
-        state->svc->last_good_srv = state->srv;
+        state->svc->last_good_srv = srv;
         state->svc->last_status_change = srv_status_change;
         state->svc->run_callbacks = false;
 
         DLIST_FOR_EACH(callback, state->svc->callbacks) {
-            callback->fn(callback->private_data, state->srv);
+            callback->fn(callback->private_data, srv);
         }
     }
 
@@ -488,7 +591,7 @@ int be_resolve_server_recv(struct tevent_req *req, struct fo_server **srv)
     TEVENT_REQ_RETURN_ON_ERROR(req);
 
     if (srv) {
-        *srv = state->srv;
+        *srv = state->lookup->current;
     }
 
     return EOK;
