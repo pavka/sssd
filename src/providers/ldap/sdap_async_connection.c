@@ -884,7 +884,8 @@ static struct tevent_req *sdap_kinit_next_kdc(struct tevent_req *req)
 
     next_req = be_resolve_server_send(state, state->ev,
                                       state->be,
-                                      state->krb_service_name);
+                                      state->krb_service_name,
+                                      state->kdc_srv == NULL ? true : false);
     if (next_req == NULL) {
         DEBUG(1, ("be_resolve_server_send failed.\n"));
         return NULL;
@@ -962,7 +963,7 @@ static void sdap_kinit_done(struct tevent_req *subreq)
         return;
     } else {
         if (kerr == KRB5_KDC_UNREACH) {
-            fo_set_port_status(state->kdc_srv, PORT_NOT_WORKING);
+            be_fo_set_port_status(state->be, state->kdc_srv, PORT_NOT_WORKING);
             nextreq = sdap_kinit_next_kdc(req);
             if (!nextreq) {
                 tevent_req_error(req, ENOMEM);
@@ -1191,7 +1192,6 @@ struct tevent_req *sdap_cli_connect_send(TALLOC_CTX *memctx,
     state->be = be;
     state->srv = NULL;
     state->srv_opts = NULL;
-    state->be = be;
     state->use_rootdse = !skip_rootdse;
     state->force_tls = force_tls;
     state->do_auth = !skip_auth;
@@ -1216,7 +1216,8 @@ static int sdap_cli_resolve_next(struct tevent_req *req)
     /* NOTE: this call may cause service->uri to be refreshed
      * with a new valid server. Do not use service->uri before */
     subreq = be_resolve_server_send(state, state->ev,
-                                    state->be, state->service->name);
+                                    state->be, state->service->name,
+                                    state->srv == NULL ? true : false);
     if (!subreq) {
         return ENOMEM;
     }
@@ -1290,7 +1291,7 @@ static void sdap_cli_connect_done(struct tevent_req *subreq)
     talloc_zfree(subreq);
     if (ret) {
         /* retry another server */
-        fo_set_port_status(state->srv, PORT_NOT_WORKING);
+        be_fo_set_port_status(state->be, state->srv, PORT_NOT_WORKING);
         ret = sdap_cli_resolve_next(req);
         if (ret != EOK) {
             tevent_req_error(req, ret);
@@ -1364,7 +1365,7 @@ static void sdap_cli_rootdse_done(struct tevent_req *subreq)
     talloc_zfree(subreq);
     if (ret) {
         if (ret == ETIMEDOUT) { /* retry another server */
-            fo_set_port_status(state->srv, PORT_NOT_WORKING);
+            be_fo_set_port_status(state->be, state->srv, PORT_NOT_WORKING);
             ret = sdap_cli_resolve_next(req);
             if (ret != EOK) {
                 tevent_req_error(req, ret);
@@ -1483,7 +1484,7 @@ static void sdap_cli_kinit_done(struct tevent_req *subreq)
     talloc_zfree(subreq);
     if (ret) {
         if (ret == ETIMEDOUT) { /* child timed out, retry another server */
-            fo_set_port_status(state->srv, PORT_NOT_WORKING);
+            be_fo_set_port_status(state->be, state->srv, PORT_NOT_WORKING);
             ret = sdap_cli_resolve_next(req);
             if (ret != EOK) {
                 tevent_req_error(req, ret);
@@ -1585,7 +1586,7 @@ int sdap_cli_connect_recv(struct tevent_req *req,
     if (tevent_req_is_error(req, &tstate, &err)) {
         /* mark the server as bad if connection failed */
         if (state->srv) {
-            fo_set_port_status(state->srv, PORT_NOT_WORKING);
+            be_fo_set_port_status(state->be, state->srv, PORT_NOT_WORKING);
         } else {
             if (can_retry) {
                 *can_retry = false;
@@ -1597,7 +1598,7 @@ int sdap_cli_connect_recv(struct tevent_req *req,
         }
         return EIO;
     } else if (state->srv) {
-        fo_set_port_status(state->srv, PORT_WORKING);
+        be_fo_set_port_status(state->be, state->srv, PORT_WORKING);
     }
 
     if (gsh) {

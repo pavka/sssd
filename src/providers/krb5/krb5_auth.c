@@ -320,6 +320,9 @@ int krb5_auth_recv(struct tevent_req *req, int *pam_status, int *dp_err)
     return EOK;
 }
 
+static struct tevent_req *krb5_next_kdc(struct tevent_req *req);
+static struct tevent_req *krb5_next_kpasswd(struct tevent_req *req);
+
 struct tevent_req *krb5_auth_send(TALLOC_CTX *mem_ctx,
                                   struct tevent_context *ev,
                                   struct be_ctx *be_ctx,
@@ -507,15 +510,13 @@ struct tevent_req *krb5_auth_send(TALLOC_CTX *mem_ctx,
 
     kr->srv = NULL;
     kr->kpasswd_srv = NULL;
-    subreq = be_resolve_server_send(state, state->ev, state->be_ctx,
-                                    krb5_ctx->service->name);
-    if (subreq == NULL) {
-        DEBUG(1, ("be_resolve_server_send failed.\n"));
-        ret = ENOMEM;
+
+    subreq = krb5_next_kdc(req);
+    if (!subreq) {
+        DEBUG(SSSDBG_CRIT_FAILURE, ("krb5_next_kdc failed.\n"));
+        ret = EIO;
         goto done;
     }
-
-    tevent_req_set_callback(subreq, krb5_resolve_kdc_done, req);
 
     return req;
 
@@ -557,16 +558,12 @@ static void krb5_resolve_kdc_done(struct tevent_req *subreq)
         }
     } else {
         if (kr->krb5_ctx->kpasswd_service != NULL) {
-            subreq = be_resolve_server_send(state, state->ev, state->be_ctx,
-                                            kr->krb5_ctx->kpasswd_service->name);
+            subreq = krb5_next_kpasswd(req);
             if (subreq == NULL) {
-                DEBUG(1, ("be_resolve_server_send failed.\n"));
-                ret = ENOMEM;
+                DEBUG(SSSDBG_CRIT_FAILURE, ("krb5_next_kpasswd failed.\n"));
+                ret = EIO;
                 goto failed;
             }
-
-            tevent_req_set_callback(subreq, krb5_resolve_kpasswd_done, req);
-
             return;
         }
     }
@@ -718,7 +715,6 @@ done:
 }
 
 static struct tevent_req *krb5_next_server(struct tevent_req *req);
-static struct tevent_req *krb5_next_kdc(struct tevent_req *req);
 static struct tevent_req *krb5_next_kpasswd(struct tevent_req *req);
 
 static void krb5_child_done(struct tevent_req *subreq)
@@ -883,14 +879,16 @@ static void krb5_child_done(struct tevent_req *subreq)
     if (kr->kpasswd_srv != NULL) {
         /* ..which is unreachable by now.. */
         if (msg_status == PAM_AUTHTOK_LOCK_BUSY) {
-            fo_set_port_status(kr->kpasswd_srv, PORT_NOT_WORKING);
+            be_fo_set_port_status(state->be_ctx,
+                                  kr->kpasswd_srv, PORT_NOT_WORKING);
             /* ..try to resolve next kpasswd server */
             if (krb5_next_kpasswd(req) == NULL) {
                 tevent_req_error(req, ENOMEM);
             }
             return;
         } else {
-            fo_set_port_status(kr->kpasswd_srv, PORT_WORKING);
+            be_fo_set_port_status(state->be_ctx,
+                                  kr->kpasswd_srv, PORT_WORKING);
         }
     }
 
@@ -900,7 +898,7 @@ static void krb5_child_done(struct tevent_req *subreq)
     if (msg_status == PAM_AUTHINFO_UNAVAIL ||
         (kr->kpasswd_srv == NULL && msg_status == PAM_AUTHTOK_LOCK_BUSY)) {
         if (kr->srv != NULL) {
-            fo_set_port_status(kr->srv, PORT_NOT_WORKING);
+            be_fo_set_port_status(state->be_ctx, kr->srv, PORT_NOT_WORKING);
             /* ..try to resolve next KDC */
             if (krb5_next_kdc(req) == NULL) {
                 tevent_req_error(req, ENOMEM);
@@ -908,7 +906,7 @@ static void krb5_child_done(struct tevent_req *subreq)
             return;
         }
     } else if (kr->srv != NULL) {
-        fo_set_port_status(kr->srv, PORT_WORKING);
+        be_fo_set_port_status(state->be_ctx, kr->srv, PORT_WORKING);
     }
 
     /* Now only a successful authentication or password change is left.
@@ -971,17 +969,20 @@ static struct tevent_req *krb5_next_server(struct tevent_req *req)
     switch (pd->cmd) {
         case SSS_PAM_AUTHENTICATE:
         case SSS_CMD_RENEW:
-            fo_set_port_status(state->kr->srv, PORT_NOT_WORKING);
+            be_fo_set_port_status(state->be_ctx,
+                                  state->kr->srv, PORT_NOT_WORKING);
             next_req = krb5_next_kdc(req);
             break;
         case SSS_PAM_CHAUTHTOK:
         case SSS_PAM_CHAUTHTOK_PRELIM:
             if (state->kr->kpasswd_srv) {
-                fo_set_port_status(state->kr->kpasswd_srv, PORT_NOT_WORKING);
+                be_fo_set_port_status(state->be_ctx,
+                                      state->kr->kpasswd_srv, PORT_NOT_WORKING);
                 next_req = krb5_next_kpasswd(req);
                 break;
             } else {
-                fo_set_port_status(state->kr->srv, PORT_NOT_WORKING);
+                be_fo_set_port_status(state->be_ctx,
+                                      state->kr->srv, PORT_NOT_WORKING);
                 next_req = krb5_next_kdc(req);
                 break;
             }
@@ -999,7 +1000,8 @@ static struct tevent_req *krb5_next_kdc(struct tevent_req *req)
 
     next_req = be_resolve_server_send(state, state->ev,
                                       state->be_ctx,
-                                      state->krb5_ctx->service->name);
+                                      state->krb5_ctx->service->name,
+                                      state->kr->srv == NULL ? true : false);
     if (next_req == NULL) {
         DEBUG(1, ("be_resolve_server_send failed.\n"));
         return NULL;
@@ -1016,7 +1018,8 @@ static struct tevent_req *krb5_next_kpasswd(struct tevent_req *req)
 
     next_req = be_resolve_server_send(state, state->ev,
                                 state->be_ctx,
-                                state->krb5_ctx->kpasswd_service->name);
+                                state->krb5_ctx->kpasswd_service->name,
+                                state->kr->kpasswd_srv == NULL ? true : false);
     if (next_req == NULL) {
         DEBUG(1, ("be_resolve_server_send failed.\n"));
         return NULL;
