@@ -60,8 +60,10 @@ _rc_alloc(const void *context, size_t size, size_t refcount_offset,
         return NULL;
     };
 
-    wrapper->refcount = (int *)((char *)wrapper->ptr + refcount_offset);
-    *wrapper->refcount = 1;
+    safealign_memcpy(&(wrapper->refcount),
+                     (char *)wrapper->ptr  + refcount_offset,
+                     sizeof(int), NULL);
+    *(wrapper->refcount) = 1;
 
     talloc_set_destructor(wrapper, refcount_destructor);
 
@@ -79,7 +81,9 @@ _rc_reference(const void *context, size_t refcount_offset, void *source)
     }
 
     wrapper->ptr = source;
-    wrapper->refcount = (int *)((char *)wrapper->ptr + refcount_offset);
+    safealign_memcpy(&(wrapper->refcount),
+                     (char *)wrapper->ptr  + refcount_offset,
+                     sizeof(int), NULL);
     (*wrapper->refcount)++;
 
     talloc_set_destructor(wrapper, refcount_destructor);
