@@ -142,6 +142,7 @@ enum nss_status _nss_sss_getpwnam_r(const char *name, struct passwd *result,
     size_t replen, len, name_len;
     enum nss_status nret;
     int ret;
+    uint32_t nres;
 
     /* Caught once glibc passing in buffer == 0x0 */
     if (!buffer || !buflen) {
@@ -188,15 +189,17 @@ enum nss_status _nss_sss_getpwnam_r(const char *name, struct passwd *result,
     pwrep.buffer = buffer;
     pwrep.buflen = buflen;
 
+    SAFEALIGN_COPY_UINT32(&nres, repbuf, NULL);
+
     /* no results if not found */
-    if (((uint32_t *)repbuf)[0] == 0) {
+    if (nres == 0) {
         free(repbuf);
         nret = NSS_STATUS_NOTFOUND;
         goto out;
     }
 
     /* only 1 result is accepted for this function */
-    if (((uint32_t *)repbuf)[0] != 1) {
+    if (nres != 1) {
         *errnop = EBADMSG;
         free(repbuf);
         nret = NSS_STATUS_TRYAGAIN;
@@ -229,6 +232,7 @@ enum nss_status _nss_sss_getpwuid_r(uid_t uid, struct passwd *result,
     enum nss_status nret;
     uint32_t user_uid;
     int ret;
+    uint32_t nres;
 
     /* Caught once glibc passing in buffer == 0x0 */
     if (!buffer || !buflen) return ERANGE;
@@ -267,15 +271,17 @@ enum nss_status _nss_sss_getpwuid_r(uid_t uid, struct passwd *result,
     pwrep.buffer = buffer;
     pwrep.buflen = buflen;
 
+    SAFEALIGN_COPY_UINT32(&nres, repbuf, NULL);
+
     /* no results if not found */
-    if (((uint32_t *)repbuf)[0] == 0) {
+    if (nres == 0) {
         free(repbuf);
         nret = NSS_STATUS_NOTFOUND;
         goto out;
     }
 
     /* only 1 result is accepted for this function */
-    if (((uint32_t *)repbuf)[0] != 1) {
+    if (nres != 1) {
         *errnop = EBADMSG;
         free(repbuf);
         nret = NSS_STATUS_TRYAGAIN;
@@ -328,6 +334,7 @@ static enum nss_status internal_getpwent_r(struct passwd *result,
     size_t replen;
     enum nss_status nret;
     uint32_t num_entries;
+    uint32_t nres;
     int ret;
 
     /* Caught once glibc passing in buffer == 0x0 */
@@ -370,8 +377,10 @@ static enum nss_status internal_getpwent_r(struct passwd *result,
         return nret;
     }
 
+    SAFEALIGN_COPY_UINT32(&nres, repbuf, NULL);
+
     /* no results if not found */
-    if ((((uint32_t *)repbuf)[0] == 0) || (replen - 8 == 0)) {
+    if ((nres == 0) || (replen - 8 == 0)) {
         free(repbuf);
         return NSS_STATUS_NOTFOUND;
     }
