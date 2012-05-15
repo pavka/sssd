@@ -57,6 +57,11 @@ struct bet_ops sdap_access_ops = {
     .finalize = sdap_shutdown
 };
 
+struct bet_ops sdap_subdomains_ops = {
+    .handler = none_subdomains_handler,
+    .finalize = NULL
+};
+
 /* Please use this only for short lists */
 errno_t check_order_list_for_duplicates(char **list,
                                         bool case_sensitive)

@@ -1224,6 +1224,7 @@ libsss_krb5_common_la_SOURCES = \
     src/providers/krb5/krb5_init_shared.c
 
 libsss_ldap_la_SOURCES = \
+    src/providers/dp_subdomains_none.c \
     src/util/find_uid.c \
     src/providers/ldap/ldap_init.c \
     src/providers/krb5/krb5_common.c \
@@ -1248,6 +1249,7 @@ libsss_ldap_la_LDFLAGS = \
 
 
 libsss_proxy_la_SOURCES = \
+    src/providers/dp_subdomains_none.c \
     src/providers/proxy/proxy_common.c \
     src/providers/proxy/proxy_init.c \
     src/providers/proxy/proxy_id.c \

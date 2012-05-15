@@ -220,6 +220,9 @@ int dp_get_sbus_address(TALLOC_CTX *mem_ctx,
                         char **address, const char *domain_name);
 
 
+/* from dp_subdomains_none.c */
+void none_subdomains_handler(struct be_req *be_req);
+
 /* Helpers */
 
 #define NULL_STRING { .string = NULL }
