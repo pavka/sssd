@@ -289,4 +289,43 @@ struct tevent_req *sss_dp_get_domains_send(TALLOC_CTX *mem_ctx,
                                            const char *hint);
 
 errno_t sss_dp_get_domains_recv(struct tevent_req *req);
+
+/* A generic request to walk all domains, checking the cache or DP
+ * and yield results
+ */
+struct sysdb_ctx;
+
+typedef errno_t (*check_ncache_fn)(struct sss_domain_info *, void *);
+typedef errno_t (*set_ncache_fn)(struct sss_domain_info *, void *);
+typedef errno_t (*check_sysdb_fn)(TALLOC_CTX *, struct sysdb_ctx *,
+                                  struct sss_domain_info *, void *,
+                                  struct ldb_result **);
+typedef struct tevent_req * (*update_cache_fn)(struct sss_domain_info *,
+                                               void *);
+typedef errno_t (*cache_updated_fn)(TALLOC_CTX *, struct tevent_req *,
+                                    dbus_uint16_t *, dbus_uint32_t *,
+                                    char **);
+typedef const char * (*get_ent_name_fn)(struct sss_domain_info *, void *);
+
+struct getent_ops {
+    check_ncache_fn check_ncache;
+    set_ncache_fn set_ncache;
+    check_sysdb_fn check_sysdb;
+    update_cache_fn update_cache;
+    cache_updated_fn cache_updated;
+    get_ent_name_fn get_ent_name;
+};
+
+struct tevent_req *
+getent_send(TALLOC_CTX *mem_ctx, struct tevent_context *ev,
+            struct cli_ctx *cctx, bool multidomain,
+            int cache_refresh_percent, struct getent_ops *ops,
+            const char *db_name, void *pvt);
+
+errno_t
+getent_recv(TALLOC_CTX *mem_ctx,
+            struct tevent_req *req,
+            struct sysdb_ctx **_db,
+            struct ldb_result **_res);
+
 #endif /* __SSS_RESPONDER_H__ */

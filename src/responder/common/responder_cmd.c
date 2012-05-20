@@ -285,3 +285,375 @@ sss_cmd_check_cache(struct ldb_message *msg,
     /* Cache needs to be updated */
     return ENOENT;
 }
+
+struct getent_state {
+    struct tevent_context *ev;
+    struct cli_ctx *cctx;
+    struct getent_ops *ops;
+
+    struct sss_domain_info **domains;
+    size_t dom_idx;
+
+    void *pvt;
+    const char *db_name;
+
+    struct ldb_result *res;
+};
+
+static errno_t getent_lookup_step(struct tevent_req *req);
+static void getent_lookup_done(struct tevent_req *subreq);
+
+struct tevent_req *
+getent_send(TALLOC_CTX *mem_ctx, struct tevent_context *ev,
+            struct cli_ctx *cctx, bool multidomain,
+            int cache_refresh_percent, struct getent_ops *ops,
+            const char *db_name, void *pvt)
+{
+    struct tevent_req *req;
+    struct tevent_req *subreq;
+    struct getent_state *state;
+    struct sss_domain_info *dom;
+    size_t dom_idx = 0;
+    size_t num_domains = 0;
+    struct sysdb_ctx *sysdb;
+    uint64_t lastUpdate;
+    uint64_t cacheExpire;
+    uint64_t midpoint_refresh;
+    time_t now = time(NULL);
+    errno_t ret;
+
+    req = tevent_req_create(mem_ctx, &state, struct getent_state);
+    if (!req) return NULL;
+    state->cctx = cctx;
+
+    for (dom = cctx->rctx->domains; dom; dom = dom->next) num_domains++;
+
+    /* Create an array of domains to check. To save resizes, we'll
+     * assume that all will be checked
+     */
+    state->domains = talloc_zero_array(state,
+                                       struct sss_domain_info *,
+                                       num_domains + 1);
+    if (!state->domains) {
+        ret = ENOMEM;
+        goto immediate;
+    }
+
+    /* FIXME - steal pvt? */
+    state->pvt = pvt;
+    state->ops = ops;
+    state->db_name = db_name;
+
+    dom = cctx->rctx->domains;
+    while (dom) {
+        /* if it is a domainless search, skip domains that require fully
+          * qualified names instead */
+         while (dom && multidomain && dom->fqnames) {
+             dom = dom->next;
+         }
+         if (!dom) break;
+
+         sysdb = dom->sysdb;
+         if (sysdb == NULL) {
+             DEBUG(SSSDBG_CRIT_FAILURE,
+                   ("Critical: Sysdb CTX not found for [%s]!\n", dom->name));
+             ret = EINVAL;
+             goto immediate;
+         }
+
+         ret = state->ops->check_ncache(dom, pvt);
+         if (ret == EEXIST) {
+             /* FIXME - for services, define a macro that yields
+              * name:protocol
+              */
+             DEBUG(SSSDBG_TRACE_FUNC,
+                     ("%s [%s] does not exist in [%s]! "
+                      "(negative cache)\n",
+                      state->db_name, state->ops->get_ent_name(dom, pvt),
+                      dom->name));
+
+             /* If this is a multi-domain search, try the next one */
+             if (multidomain) {
+                 dom = dom->next;
+             } else {
+                 /* This was a single-domain search.
+                  * exit the loop. Since it was negatively-
+                  * cached, don't add it to the eligible
+                  * domains list.
+                  */
+                 dom = NULL;
+             }
+
+             continue;
+         }
+
+        /* Check the cache */
+        DEBUG(SSSDBG_TRACE_FUNC,
+              ("Checking cache for %s [%s@%s]\n",
+               state->db_name, state->ops->get_ent_name(dom, pvt),
+               dom->name));
+
+        ret = state->ops->check_sysdb(state, sysdb, dom, pvt, &state->res);
+        if (ret != EOK && ret != ENOENT) goto immediate;
+        if (ret == ENOENT) {
+             /* Not found in the cache. Add this domain to the
+              * list of eligible domains to check the provider.
+              */
+             if (NEED_CHECK_PROVIDER(dom->provider)) {
+                 state->domains[dom_idx] = dom;
+                 dom_idx++;
+             } else {
+                 /* No provider to check. Set the negative cache here */
+                 ret = state->ops->set_ncache(dom, pvt);
+                 if (ret != EOK) {
+                     /* Failure to set the negative cache is non-fatal.
+                      * We'll log an error and continue.
+                      */
+                    DEBUG(SSSDBG_MINOR_FAILURE,
+                        ("Could not set negative cache for %s [%s@%s]\n",
+                        state->db_name, state->ops->get_ent_name(dom, pvt),
+                        dom->name));
+                 }
+             }
+
+             /* If this is a multi-domain search, try the next one */
+             if (multidomain) {
+                 dom = dom->next;
+             } else {
+                 /* This was a single-domain search.
+                  * exit the loop.
+                  */
+                 dom = NULL;
+             }
+             continue;
+         }
+
+         /* Found a result. Check its validity */
+         if (state->res->count > 1) {
+             DEBUG(SSSDBG_OP_FAILURE,
+                   ("getservby* returned more than one result!\n"));
+             ret = ENOENT;
+             goto immediate;
+         }
+
+         /* FIXME - reuse sss_cmd_check_cache? */
+         lastUpdate = ldb_msg_find_attr_as_uint64(state->res->msgs[0],
+                                                  SYSDB_LAST_UPDATE, 0);
+
+         /* FIXME - parametrize CACHE_EXPIRE to be reusable by initgroups */
+         cacheExpire = ldb_msg_find_attr_as_uint64(state->res->msgs[0],
+                                                   SYSDB_CACHE_EXPIRE, 0);
+
+         midpoint_refresh = 0;
+         if (cache_refresh_percent) {
+             midpoint_refresh = lastUpdate +
+               (cacheExpire - lastUpdate)*cache_refresh_percent/100;
+             if (midpoint_refresh - lastUpdate < 10) {
+                 /* If the percentage results in an expiration
+                  * less than ten seconds after the lastUpdate time,
+                  * that's too often we will simply set it to 10s
+                  */
+                 midpoint_refresh = lastUpdate+10;
+             }
+         }
+
+         if (cacheExpire > now) {
+             /* cache still valid */
+             if (NEED_CHECK_PROVIDER(dom->provider)
+                     && midpoint_refresh
+                     && midpoint_refresh < now) {
+                 /* We're past the the cache refresh timeout
+                  * We'll return the value from the cache, but we'll also
+                  * queue the cache entry for update out-of-band.
+                  */
+                 DEBUG(SSSDBG_TRACE_FUNC,
+                       ("Performing midpoint cache update\n"));
+
+                 /* Update the cache */
+                 subreq = state->ops->update_cache(dom, pvt);
+                 if (!subreq) {
+                     DEBUG(SSSDBG_CRIT_FAILURE,
+                           ("Out of memory sending out-of-band data provider "
+                            "request\n"));
+                     /* This is non-fatal, so we'll continue here */
+                 }
+                 /* We don't need to listen for a reply, so we will free the
+                  * request here.
+                  */
+                 talloc_zfree(subreq);
+             }
+
+             /* The cache is valid. Return it */
+             ret = EOK;
+             goto immediate;
+         } else {
+             /* Cache is expired. Add this domain to the
+              * list of eligible domains to check the provider.
+              */
+             if (NEED_CHECK_PROVIDER(dom->provider)) {
+                 state->domains[dom_idx] = dom;
+                 dom_idx++;
+             }
+
+             /* If this is a multi-domain search, try the next one */
+             if (multidomain) {
+                 dom = dom->next;
+             } else {
+                 /* This was a single-domain search.
+                  * exit the loop.
+                  */
+                 dom = NULL;
+             }
+         }
+    }
+
+    /* No valid cached entries found and
+     * not found in negative caches.
+     * Iterate through the domains and try
+     * to look the data up.
+     */
+
+    state->dom_idx = 0;
+    if (!state->domains[state->dom_idx]) {
+        /* No domains to search. Return ENOENT */
+        ret = ENOENT;
+        goto immediate;
+    }
+
+    ret = getent_lookup_step(req);
+    if (ret != EOK) goto immediate;
+
+    return req;
+
+    ret = EFAULT; /* We should never get here */
+immediate:
+    if (ret == EOK) {
+        tevent_req_done(req);
+    } else {
+        tevent_req_error(req, ret);
+    }
+    tevent_req_post(req, ev);
+    return req;
+}
+
+static errno_t
+getent_lookup_step(struct tevent_req *req)
+{
+    struct getent_state *state =
+            tevent_req_data(req, struct getent_state);
+    struct sss_domain_info *dom =
+            state->domains[state->dom_idx];
+    struct tevent_req *subreq;
+
+    subreq = state->ops->update_cache(dom, state->pvt);
+    if (!subreq) return ENOMEM;
+    tevent_req_set_callback(subreq, getent_lookup_done, req);
+
+    return EOK;
+}
+
+static void
+getent_lookup_done(struct tevent_req *subreq)
+{
+    errno_t ret;
+    dbus_uint16_t err_maj;
+    dbus_uint32_t err_min;
+    char *err_msg;
+    struct sysdb_ctx *sysdb;
+
+    struct tevent_req *req =
+            tevent_req_callback_data(subreq, struct tevent_req);
+    struct getent_state *state =
+            tevent_req_data(req, struct getent_state);
+    struct sss_domain_info *dom = state->domains[state->dom_idx];
+
+    ret = state->ops->cache_updated(state, subreq,
+                                    &err_maj, &err_min,
+                                    &err_msg);
+    talloc_zfree(subreq);
+    if (ret != EOK) {
+        DEBUG(SSSDBG_OP_FAILURE,
+              ("Unable to get information from Data Provider\n"
+               "dp_error: [%u], errno: [%u], error_msg: [%s]\n"
+               "Will try to return what we have in cache\n",
+               (unsigned int)err_maj, (unsigned int)err_min,
+               err_msg ? err_msg : "none"));
+    }
+
+    /* Recheck the cache after the lookup.
+     * We can ignore the expiration values here, because
+     * either we have just updated it or the provider is
+     * offline. Either way, whatever is in the cache should
+     * be returned, if it exists. Otherwise, move to the
+     * next provider.
+     */
+    sysdb = dom->sysdb;
+    if (sysdb == NULL) {
+        DEBUG(SSSDBG_CRIT_FAILURE,
+              ("Critical: Sysdb CTX not found for [%s]!\n",
+                dom->name));
+        ret = EINVAL;
+        goto done;
+    }
+
+    ret = state->ops->check_sysdb(state, sysdb, dom,
+                                  state->pvt, &state->res);
+    DEBUG(SSSDBG_TRACE_FUNC,
+          ("Re-checking cache for %s [%s@%s]\n",
+           state->db_name, state->ops->get_ent_name(dom, state->pvt),
+           dom->name));
+    if (ret == ENOENT) {
+        ret = state->ops->set_ncache(dom, state->pvt);
+        if (ret != EOK) {
+            /* Failure to set the negative cache is non-fatal.
+             * We'll log an error and continue.
+             */
+            DEBUG(SSSDBG_MINOR_FAILURE,
+                  ("Could not set negative cache for %s [%s@%s]\n",
+                   state->db_name, state->ops->get_ent_name(dom, state->pvt),
+                   dom->name));
+        }
+
+        /* Need to check other domains */
+        state->dom_idx++;
+        if (!state->domains[state->dom_idx]) {
+            /* No more domains to search. Return ENOENT */
+            ret = ENOENT;
+            goto done;
+        }
+
+        ret = getent_lookup_step(req);
+        if (ret != EOK) goto done;
+
+        /* Set EAGAIN so we will re-enter the mainloop */
+        ret = EAGAIN;
+    }
+
+done:
+    if (ret == EOK) {
+        /* Cache contained results. Return them */
+        tevent_req_done(req);
+    } else if (ret != EAGAIN) {
+        /* An error occurred, fail the request */
+        tevent_req_error(req, ret);
+    }
+
+    /* ret == EAGAIN: Reenter mainloop */
+    return;
+}
+
+errno_t
+getent_recv(TALLOC_CTX *mem_ctx,
+            struct tevent_req *req,
+            struct sysdb_ctx **_db,
+            struct ldb_result **_res)
+{
+    struct getent_state *state =
+            tevent_req_data(req, struct getent_state);
+
+    TEVENT_REQ_RETURN_ON_ERROR(req);
+
+    *_res = talloc_steal(mem_ctx, state->res);
+    if (_db) *_db = state->domains[state->dom_idx]->sysdb;
+    return EOK;
+}
