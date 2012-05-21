@@ -342,6 +342,13 @@ set_autofs_map_lifetime(uint32_t lifetime,
     }
 }
 
+#define set_map_entry(map, isready, isfound, lookup_ctx) do {       \
+        map->ready = isready;                                       \
+        map->found = isfound;                                       \
+        set_autofs_map_lifetime(lookup_ctx->actx->neg_timeout,      \
+                                lookup_ctx, map);                   \
+} while(0)
+
 static struct tevent_req *
 setautomntent_send(TALLOC_CTX *mem_ctx,
                    const char *rawname,
@@ -530,282 +537,212 @@ fail:
     return req;
 }
 
-static errno_t
-lookup_automntmap_update_cache(struct setautomntent_lookup_ctx *lookup_ctx);
+const char *
+get_autofs_map_name(void *pvt)
+{
+    struct setautomntent_lookup_ctx *lookup_ctx = talloc_get_type(pvt,
+            struct setautomntent_lookup_ctx);
+    return lookup_ctx->mapname;
+}
+
+errno_t
+autofs_map_in_ncache(void *pvt)
+{
+    struct autofs_map_ctx *map;
+    struct setautomntent_lookup_ctx *lookup_ctx = talloc_get_type(pvt,
+            struct setautomntent_lookup_ctx);
+    errno_t ret;
+
+    ret = get_autofs_map(lookup_ctx->actx, lookup_ctx->mapname, &map);
+    if (ret == ENOENT) {
+        /* The map hasn't been looked up yet. This shouldn't happen
+         * at this point.
+         */
+        DEBUG(SSSDBG_CRIT_FAILURE, ("Autofs map entry was lost!\n"));
+        return EIO;
+    } else if (ret != EOK) {
+        DEBUG(SSSDBG_CRIT_FAILURE, ("Failed to retrieve autofs map entry\n"));
+        return ret;
+    }
+
+    /* Got the map. Was it found or not? */
+    if (map->ready && !map->found) {
+        DEBUG(SSSDBG_TRACE_INTERNAL, ("Setting negative cache for %s\n",
+              lookup_ctx->mapname));
+        return EEXIST;
+    }
+
+    return ENOENT;
+}
+
+errno_t
+autofs_map_set_ncache(void *pvt)
+{
+    struct autofs_map_ctx *map;
+    struct setautomntent_lookup_ctx *lookup_ctx = talloc_get_type(pvt,
+            struct setautomntent_lookup_ctx);
+    errno_t ret;
+
+    ret = get_autofs_map(lookup_ctx->actx, lookup_ctx->mapname, &map);
+    if (ret == ENOENT) {
+        /* The map hasn't been looked up yet. This shouldn't happen
+         * at this point.
+         */
+        DEBUG(SSSDBG_CRIT_FAILURE, ("Autofs map entry was lost!\n"));
+        return EIO;
+    } else if (ret != EOK) {
+        DEBUG(SSSDBG_CRIT_FAILURE, ("Failed to retrieve autofs map entry\n"));
+        return ret;
+    }
+
+    DEBUG(SSSDBG_MINOR_FAILURE,
+          ("Autofs map not found, setting negative cache\n"));
+    set_map_entry(map, true, false, lookup_ctx);
+    return EOK;
+}
+
+errno_t
+autofs_map_check_sysdb(TALLOC_CTX *mem_ctx,
+                       struct sysdb_ctx *sysdb,
+                       void *pvt,
+                       struct ldb_result **res)
+{
+    errno_t ret;
+    struct ldb_message *msg;
+    struct setautomntent_lookup_ctx *lookup_ctx = talloc_get_type(pvt,
+            struct setautomntent_lookup_ctx);
+
+    ret = sysdb_get_map_byname(lookup_ctx, sysdb, lookup_ctx->mapname, &msg);
+    if (ret != EOK) {
+        return ret;
+    }
+
+    *res = talloc_zero(mem_ctx, struct ldb_result);
+    if (!*res) {
+        talloc_free(msg);
+        return ENOMEM;
+    }
+
+    (*res)->msgs = talloc_zero_array(*res, struct ldb_message *, 2);
+    if (!(*res)->msgs) {
+        talloc_free(msg);
+        talloc_free(*res);
+        return ENOMEM;
+    }
+    (*res)->msgs[0] = talloc_move(*res, &msg);
+    (*res)->count = 1;
+
+    return EOK;
+}
+
+struct tevent_req *
+autofs_map_lookup(void *pvt)
+{
+    struct setautomntent_lookup_ctx *lookup_ctx = talloc_get_type(pvt,
+            struct setautomntent_lookup_ctx);
+
+    return sss_dp_get_autofs_send(lookup_ctx->cctx, lookup_ctx->rctx,
+                                  lookup_ctx->dctx->domain, true,
+                                  SSS_DP_AUTOFS, lookup_ctx->mapname);
+}
+
+errno_t
+autofs_map_updated(TALLOC_CTX *mem_ctx, struct tevent_req *req,
+                   dbus_uint16_t *dp_err, dbus_uint32_t *dp_ret,
+                   char **err_msg)
+{
+    return sss_dp_get_autofs_recv(mem_ctx, req, dp_err, dp_ret, err_msg);
+}
+
+static void setautomntent_done(struct tevent_req *subreq);
 
 static errno_t
 lookup_automntmap_step(struct setautomntent_lookup_ctx *lookup_ctx)
 {
-    errno_t ret;
-    struct sss_domain_info *dom = lookup_ctx->dctx->domain;
-    struct autofs_dom_ctx *dctx = lookup_ctx->dctx;
-    struct sysdb_ctx *sysdb;
-    struct autofs_map_ctx *map;
+    struct tevent_req *req;
+    static struct getent_ops setautomntent_ops = {
+        .check_ncache = autofs_map_in_ncache,
+        .set_ncache = autofs_map_set_ncache,
+        .check_sysdb = autofs_map_check_sysdb,
+        .update_cache = autofs_map_lookup,
+        .cache_updated = autofs_map_updated,
+        .get_ent_name = get_autofs_map_name
+    };
 
-    /* Check each domain for this map name */
-    while (dom) {
-        /* if it is a domainless search, skip domains that require fully
-         * qualified names instead */
-        while (dom && dctx->cmd_ctx->check_next && dom->fqnames) {
-            dom = dom->next;
-        }
-
-        /* No domains left to search */
-        if (!dom) break;
-
-        if (dom != dctx->domain) {
-            /* make sure we reset the check_provider flag when we check
-             * a new domain */
-            dctx->check_provider =
-                    NEED_CHECK_PROVIDER(dom->provider);
-        }
-
-        /* make sure to update the dctx if we changed domain */
-        dctx->domain = dom;
-
-        DEBUG(SSSDBG_TRACE_FUNC, ("Requesting info for [%s@%s]\n",
-              lookup_ctx->mapname, dom->name));
-        sysdb = dom->sysdb;
-        if (sysdb == NULL) {
-            DEBUG(SSSDBG_FATAL_FAILURE,
-                  ("Fatal: Sysdb CTX not found for this domain!\n"));
-            return EIO;
-        }
-
-        /* Look into the cache */
-        talloc_free(dctx->map);
-        ret = sysdb_get_map_byname(dctx, sysdb, lookup_ctx->mapname,
-                                   &dctx->map);
-        if (ret != EOK && ret != ENOENT) {
-            DEBUG(SSSDBG_OP_FAILURE, ("Could not check cache\n"));
-            return ret;
-        } else if (ret == ENOENT) {
-            DEBUG(SSSDBG_MINOR_FAILURE,
-                  ("No automount map [%s] in cache for domain [%s]\n",
-                   lookup_ctx->mapname, dom->name));
-            if (!dctx->check_provider) {
-                if (dctx->cmd_ctx->check_next) {
-                    DEBUG(SSSDBG_TRACE_INTERNAL, ("Moving on to next domain\n"));
-                    dom = dom->next;
-                    continue;
-                }
-                else break;
-            }
-        }
-
-        ret = get_autofs_map(lookup_ctx->actx, lookup_ctx->mapname, &map);
-        if (ret != EOK) {
-            /* Something really bad happened! */
-            DEBUG(SSSDBG_CRIT_FAILURE, ("Autofs map entry was lost!\n"));
-            return ret;
-        }
-
-        if (dctx->map == NULL && !dctx->check_provider) {
-            DEBUG(SSSDBG_MINOR_FAILURE,
-                  ("Autofs map not found, setting negative cache\n"));
-            map->ready = true;
-            map->found = false;
-            set_autofs_map_lifetime(lookup_ctx->actx->neg_timeout, lookup_ctx, map);
-            return ENOENT;
-        }
-
-        if (dctx->check_provider) {
-            ret = lookup_automntmap_update_cache(lookup_ctx);
-            if (ret == EAGAIN) {
-                DEBUG(SSSDBG_TRACE_INTERNAL,
-                      ("Looking up automount maps from the DP\n"));
-                return EAGAIN;
-            } else if (ret != EOK) {
-                DEBUG(SSSDBG_OP_FAILURE,
-                      ("Error looking up automount maps [%d]: %s\n",
-                       ret, strerror(ret)));
-                return ret;
-            }
-        }
-
-        /* OK, the map is in cache and valid.
-         * Let's get all members and return it
-         */
-        ret = sysdb_autofs_entries_by_map(map, sysdb, map->mapname,
-                                          &map->entry_count,
-                                          &map->entries);
-        if (ret != EOK && ret != ENOENT) {
-            DEBUG(SSSDBG_OP_FAILURE,
-                  ("Error looking automount map entries [%d]: %s\n",
-                  ret, strerror(ret)));
-            map->ready = true;
-            map->found = false;
-            set_autofs_map_lifetime(lookup_ctx->actx->neg_timeout, lookup_ctx, map);
-            return EIO;
-        }
-
-        map->map = talloc_steal(map, dctx->map);
-
-        DEBUG(SSSDBG_TRACE_FUNC,
-              ("setautomntent done for map %s\n", lookup_ctx->mapname));
-        map->ready = true;
-        map->found = true;
-        set_autofs_map_lifetime(dom->autofsmap_timeout, lookup_ctx, map);
-        return EOK;
-    }
-
-    map = talloc_zero(lookup_ctx->actx, struct autofs_map_ctx);
-    if (!map) {
-        return ENOMEM;
-    }
-
-    map->ready = true;
-    map->found = false;
-    map->map_table = lookup_ctx->actx->maps;
-
-    map->mapname = talloc_strdup(map, lookup_ctx->mapname);
-    if (!map->mapname) {
-        talloc_free(map);
-        return ENOMEM;
-    }
-
-    ret = set_autofs_map(lookup_ctx->actx, map);
-    if (ret != EOK) {
-        talloc_free(map);
-        return ENOMEM;
-    }
-
-    set_autofs_map_lifetime(lookup_ctx->actx->neg_timeout, lookup_ctx, map);
-
-    /* If we've gotten here, then no domain contained this map */
-    return ENOENT;
-}
-
-static void lookup_automntmap_cache_updated(uint16_t err_maj, uint32_t err_min,
-                                            const char *err_msg, void *ptr);
-static void autofs_dp_send_map_req_done(struct tevent_req *req);
-
-static errno_t
-lookup_automntmap_update_cache(struct setautomntent_lookup_ctx *lookup_ctx)
-{
-    errno_t ret;
-    uint64_t cache_expire = 0;
-    struct autofs_dom_ctx *dctx = lookup_ctx->dctx;
-    struct tevent_req *req = NULL;
-    struct dp_callback_ctx *cb_ctx = NULL;
-
-    if (dctx->map != NULL) {
-        cache_expire = ldb_msg_find_attr_as_uint64(dctx->map,
-                                                   SYSDB_CACHE_EXPIRE, 0);
-
-        /* if we have any reply let's check cache validity */
-        ret = sss_cmd_check_cache(dctx->map, 0, cache_expire);
-        if (ret == EOK) {
-            DEBUG(SSSDBG_TRACE_FUNC, ("Cached entry is valid, returning..\n"));
-            return EOK;
-        } else if (ret != EAGAIN && ret != ENOENT) {
-            DEBUG(SSSDBG_CRIT_FAILURE, ("Error checking cache: %d\n", ret));
-            goto error;
-        }
-    }
-
-    /* dont loop forever :-) */
-    dctx->check_provider = false;
-
-    /* keep around current data in case backend is offline */
-    /* FIXME - do this by default */
-#if 0
-    if (dctx->res->count) {
-        dctx->res = talloc_steal(dctx, dctx->res);
-    }
-#endif
-
-    req = sss_dp_get_autofs_send(lookup_ctx->cctx, lookup_ctx->rctx,
-                                 lookup_ctx->dctx->domain, true,
-                                 SSS_DP_AUTOFS, lookup_ctx->mapname);
+    req = getent_send(lookup_ctx, lookup_ctx->rctx->ev, lookup_ctx->cctx,
+                      lookup_ctx->dctx->cmd_ctx->check_next, 0,
+                      &setautomntent_ops, "autofs", lookup_ctx);
     if (!req) {
-        DEBUG(SSSDBG_CRIT_FAILURE,
-              ("Out of memory sending data provider request\n"));
-        ret = ENOMEM;
-        goto error;
+        return ENOMEM;
     }
+    /* FIXME - what if the client disconnects at this point? */
+    tevent_req_set_callback(req, setautomntent_done, lookup_ctx);
 
-    cb_ctx = talloc_zero(lookup_ctx->dctx, struct dp_callback_ctx);
-    if(!cb_ctx) {
-        talloc_zfree(req);
-        ret = ENOMEM;
-        goto error;
-    }
-    cb_ctx->callback = lookup_automntmap_cache_updated;
-    cb_ctx->ptr = lookup_ctx;
-    cb_ctx->cctx = lookup_ctx->dctx->cmd_ctx->cctx;
-    cb_ctx->mem_ctx = lookup_ctx->dctx;
-
-    tevent_req_set_callback(req, autofs_dp_send_map_req_done, cb_ctx);
-
-    return EAGAIN;
-
-error:
-    ret = autofs_cmd_send_error(lookup_ctx->dctx->cmd_ctx, ret);
-    if (ret != EOK) {
-        DEBUG(SSSDBG_CRIT_FAILURE, ("Fatal error, killing connection!\n"));
-        talloc_free(lookup_ctx->cctx);
-        return ret;
-    }
-    autofs_cmd_done(lookup_ctx->dctx->cmd_ctx, ret);
     return EOK;
 }
 
-static void autofs_dp_send_map_req_done(struct tevent_req *req)
+static void setautomntent_done(struct tevent_req *req)
 {
-    struct dp_callback_ctx *cb_ctx =
-            tevent_req_callback_data(req, struct dp_callback_ctx);
-    struct setautomntent_lookup_ctx *lookup_ctx =
-            talloc_get_type(cb_ctx->ptr, struct setautomntent_lookup_ctx);
-
     errno_t ret;
-    dbus_uint16_t err_maj;
-    dbus_uint32_t err_min;
-    char *err_msg;
+    struct setautomntent_lookup_ctx *lookup_ctx = tevent_req_data(req,
+            struct setautomntent_lookup_ctx);
+    struct autofs_map_ctx *map;
+    struct ldb_result *rcv_map;
+    struct sysdb_ctx *sysdb;
 
-    ret = sss_dp_get_autofs_recv(cb_ctx->mem_ctx, req,
-                                 &err_maj, &err_min,
-                                 &err_msg);
+    ret = getent_recv(lookup_ctx, req, &sysdb, &rcv_map);
     talloc_free(req);
-    if (ret != EOK) {
-        DEBUG(SSSDBG_CRIT_FAILURE, ("Fatal error, killing connection!\n"));
-        talloc_free(lookup_ctx->cctx);
+    if (ret != EOK && ret != ENOENT) {
+        DEBUG(SSSDBG_OP_FAILURE, ("getent failed\n"));
+        autofs_cmd_done(lookup_ctx->dctx->cmd_ctx, ret);
         return;
     }
+    /* Either we succeeded or no domains were eligible */
 
-    cb_ctx->callback(err_maj, err_min, err_msg, cb_ctx->ptr);
-}
-
-static void lookup_automntmap_cache_updated(uint16_t err_maj, uint32_t err_min,
-                                            const char *err_msg, void *ptr)
-{
-    struct setautomntent_lookup_ctx *lookup_ctx =
-            talloc_get_type(ptr, struct setautomntent_lookup_ctx);
-    struct autofs_dom_ctx *dctx = lookup_ctx->dctx;
-    errno_t ret;
-
-    if (err_maj) {
-        DEBUG(SSSDBG_CRIT_FAILURE,
-              ("Unable to get information from Data Provider\n"
-               "Error: %u, %u, %s\n"
-               "Will try to return what we have in cache\n",
-               (unsigned int)err_maj, (unsigned int)err_min, err_msg));
-        /* Loop to the next domain if possible */
-        if (dctx->domain->next && dctx->cmd_ctx->check_next) {
-            dctx->domain = dctx->domain->next;
-            dctx->check_provider = NEED_CHECK_PROVIDER(dctx->domain->provider);
-        }
-    }
-
-    /* ok the backend returned, search to see if we have updated results */
-    ret = lookup_automntmap_step(lookup_ctx);
+    ret = get_autofs_map(lookup_ctx->actx, lookup_ctx->mapname, &map);
     if (ret != EOK) {
-        if (ret == EAGAIN) {
-            return;
-        }
+        /* Something really bad happened! */
+        DEBUG(SSSDBG_CRIT_FAILURE, ("Autofs map entry was lost!\n"));
+        goto done;
     }
 
-    /* We have results to return */
+    if (ret == ENOENT) {
+        /* Make sure the map is in negative cache */
+        set_map_entry(map, true, false, lookup_ctx);
+        goto done;
+    }
+
+    if (rcv_map->count != 1) {
+        DEBUG(SSSDBG_CRIT_FAILURE,
+              ("Cache containes %d duplicate entries\n",
+               rcv_map->count));
+        ret = EIO;
+        goto done;
+    }
+
+    /* OK, the map is in cache and valid.
+        * Let's get all members and return it
+        */
+    ret = sysdb_autofs_entries_by_map(map, sysdb, map->mapname,
+                                      &map->entry_count, &map->entries);
+    if (ret != EOK && ret != ENOENT) {
+        DEBUG(SSSDBG_OP_FAILURE,
+              ("Error looking automount map entries [%d]: %s\n",
+              ret, strerror(ret)));
+        set_map_entry(map, true, false, lookup_ctx);
+        ret = EIO;
+        goto done;
+    }
+
+    map->map = talloc_steal(map, rcv_map->msgs[0]);
+
+    DEBUG(SSSDBG_TRACE_FUNC,
+          ("setautomntent done for map %s\n", lookup_ctx->mapname));
+    set_map_entry(map, true, true, lookup_ctx);
+
+    ret = EOK;
+done:
+    /* FIXME - what about autofs_cmd_done() ? */
     autofs_setent_notify(lookup_ctx->map, ret);
 }
 
