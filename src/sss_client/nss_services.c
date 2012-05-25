@@ -54,8 +54,8 @@ static void sss_nss_getservent_data_clean(void) {
  *
  * GETSERVBYPORT Request:
  * 0-3: 16-bit port number in network byte order
- * 4-7: Reserved/padding
- * 8-X: Zero-terminated string (protocol)
+ * 4-15: Reserved/padding
+ * 16-X: Zero-terminated string (protocol)
  * Protocol may be zero-length to imply "any"
  *
  * Replies:
@@ -270,6 +270,7 @@ _nss_sss_getservbyport_r(int port, const char *protocol,
     size_t proto_len = 0;
     uint8_t *repbuf;
     uint8_t *data;
+    size_t p = 0;
     size_t replen, len;
     enum nss_status nret;
     int ret;
@@ -286,22 +287,23 @@ _nss_sss_getservbyport_r(int port, const char *protocol,
     }
 
     rd.len = sizeof(uint32_t)*2 + proto_len + 1;
-    data = malloc(sizeof(char)*rd.len);
+    data = malloc(sizeof(uint8_t)*rd.len);
     if (data == NULL) {
         nret = NSS_STATUS_TRYAGAIN;
         goto out;
     }
 
-    SAFEALIGN_SET_UINT32(data, port, NULL);
+    SAFEALIGN_SET_UINT16(data, port, &p);
 
     /* Padding */
-    memset(data + sizeof(uint32_t), 0, 4);
+    SAFEALIGN_SET_UINT16(data + p, 0, &p);
+    SAFEALIGN_SET_UINT32(data + p, 0, &p);
 
     if (protocol) {
-        memcpy(data + sizeof(uint32_t)*2, protocol, proto_len + 1);
+        memcpy(data + p, protocol, proto_len + 1);
     } else {
         /* No protocol specified, pass empty string */
-        data[sizeof(uint32_t)*2] = '\0';
+        data[p] = '\0';
     }
     rd.data = data;
 
