@@ -31,6 +31,8 @@
 #include "db/sysdb.h"
 #include <time.h>
 
+#define NSS_CASED_NAME(dom, pvt) (dom->case_sensitive ? pvt->name : pvt->cased_name)
+
 static int nss_cmd_send_error(struct nss_cmd_ctx *cmdctx, int err)
 {
     return sss_cmd_send_error(cmdctx->cctx, err);
@@ -581,176 +583,168 @@ static void nsssrv_dp_send_acct_req_done(struct tevent_req *req)
     cb_ctx->callback(err_maj, err_min, err_msg, cb_ctx->ptr);
 }
 
-static void nss_cmd_getpwnam_dp_callback(uint16_t err_maj, uint32_t err_min,
-                                         const char *err_msg, void *ptr);
-
-/* search for a user.
- * Returns:
- *   ENOENT, if user is definitely not found
- *   EAGAIN, if user is beeing fetched from backend via async operations
- *   EOK, if found
- *   anything else on a fatal error
- */
-
-static int nss_cmd_getpwnam_search(struct nss_dom_ctx *dctx)
-{
-    struct nss_cmd_ctx *cmdctx = dctx->cmdctx;
-    struct sss_domain_info *dom = dctx->domain;
-    struct cli_ctx *cctx = cmdctx->cctx;
-    char *name = NULL;
-    struct sysdb_ctx *sysdb;
+/* FIXME - does this obsolete dctx? */
+struct getpwnam_search_ctx {
     struct nss_ctx *nctx;
-    int ret;
+    struct cli_ctx *cctx;
+    const char *name;
+    const char *cased_name;
+};
 
-    nctx = talloc_get_type(cctx->rctx->pvt_ctx, struct nss_ctx);
+static errno_t
+nss_cmd_getpwnam_check_ncache(struct sss_domain_info *dom, void *pvt)
+{
+    struct getpwnam_search_ctx *ctx =
+        talloc_get_type(pvt, struct getpwnam_search_ctx);
 
-    while (dom) {
-       /* if it is a domainless search, skip domains that require fully
-         * qualified names instead */
-        while (dom && cmdctx->check_next && dom->fqnames) {
-            dom = dom->next;
-        }
-
-        if (!dom) break;
-
-        if (dom != dctx->domain) {
-            /* make sure we reset the check_provider flag when we check
-             * a new domain */
-            dctx->check_provider = NEED_CHECK_PROVIDER(dom->provider);
-        }
-
-        /* make sure to update the dctx if we changed domain */
-        dctx->domain = dom;
-
-        talloc_free(name);
-        name = sss_get_cased_name(dctx, cmdctx->name, dom->case_sensitive);
-        if (!name) return ENOMEM;
-
-        /* verify this user has not yet been negatively cached,
-        * or has been permanently filtered */
-        ret = sss_ncache_check_user(nctx->ncache, nctx->neg_timeout,
-                                    dom, name);
-
-        /* if neg cached, return we didn't find it */
-        if (ret == EEXIST) {
-            DEBUG(2, ("User [%s] does not exist in [%s]! (negative cache)\n",
-                      name, dom->name));
-            /* if a multidomain search, try with next */
-            if (cmdctx->check_next) {
-                dom = dom->next;
-                continue;
-            }
-            /* There are no further domains or this was a
-             * fully-qualified user request.
-             */
-            return ENOENT;
-        }
-
-        DEBUG(4, ("Requesting info for [%s@%s]\n", name, dom->name));
-
-        sysdb = dom->sysdb;
-        if (sysdb == NULL) {
-            DEBUG(0, ("Fatal: Sysdb CTX not found for this domain!\n"));
-            return EIO;
-        }
-
-        ret = sysdb_getpwnam(cmdctx, sysdb, name, &dctx->res);
-        if (ret != EOK) {
-            DEBUG(1, ("Failed to make request to our cache!\n"));
-            return EIO;
-        }
-
-        if (dctx->res->count > 1) {
-            DEBUG(0, ("getpwnam call returned more than one result !?!\n"));
-            return ENOENT;
-        }
-
-        if (dctx->res->count == 0 && !dctx->check_provider) {
-            /* set negative cache only if not result of cache check */
-            ret = sss_ncache_set_user(nctx->ncache, false, dom, name);
-            if (ret != EOK) {
-                return ret;
-            }
-
-            /* if a multidomain search, try with next */
-            if (cmdctx->check_next) {
-                dom = dom->next;
-                if (dom) continue;
-            }
-
-            DEBUG(2, ("No results for getpwnam call\n"));
-
-            return ENOENT;
-        }
-
-        /* if this is a caching provider (or if we haven't checked the cache
-         * yet) then verify that the cache is uptodate */
-        if (dctx->check_provider) {
-            ret = check_cache(dctx, nctx, dctx->res,
-                              SSS_DP_USER, name, 0,
-                              nss_cmd_getpwnam_dp_callback,
-                              dctx);
-            if (ret != EOK) {
-                /* Anything but EOK means we should reenter the mainloop
-                 * because we may be refreshing the cache
-                 */
-                return ret;
-            }
-        }
-
-        /* One result found */
-        DEBUG(6, ("Returning info for user [%s@%s]\n", name, dom->name));
-
-        return EOK;
-    }
-
-    DEBUG(SSSDBG_MINOR_FAILURE,
-          ("No matching domain found for [%s], fail!\n", cmdctx->name));
-    return ENOENT;
+    return sss_ncache_check_user(ctx->nctx->ncache, ctx->nctx->neg_timeout,
+                                 dom, ctx->name);
 }
 
-static void nss_cmd_getpwnam_dp_callback(uint16_t err_maj, uint32_t err_min,
-                                         const char *err_msg, void *ptr)
+static errno_t
+nss_cmd_getpwnam_set_ncache(struct sss_domain_info *dom, void *pvt)
 {
-    struct nss_dom_ctx *dctx = talloc_get_type(ptr, struct nss_dom_ctx);
+    struct getpwnam_search_ctx *ctx =
+        talloc_get_type(pvt, struct getpwnam_search_ctx);
+
+    return sss_ncache_set_user(ctx->nctx->ncache, false, dom, ctx->name);
+}
+
+static errno_t
+nss_cmd_getpwnam_check_cache(TALLOC_CTX *mem_ctx, struct sysdb_ctx *sysdb,
+                             struct sss_domain_info *dom, void *pvt,
+                             struct ldb_result **res)
+{
+    struct getpwnam_search_ctx *ctx =
+        talloc_get_type(pvt, struct getpwnam_search_ctx);
+
+    return sysdb_getpwnam(mem_ctx, sysdb, NSS_CASED_NAME(dom, ctx), res);
+}
+
+static struct tevent_req *
+nss_cmd_getpwnam_update_cache(struct sss_domain_info *dom, void *pvt)
+{
+    struct getpwnam_search_ctx *ctx =
+        talloc_get_type(pvt, struct getpwnam_search_ctx);
+
+    return sss_dp_get_account_send(ctx->cctx, ctx->cctx->rctx,
+                                   dom, true, SSS_DP_USER,
+                                   NSS_CASED_NAME(dom, ctx),
+                                   0, NULL);
+}
+
+static errno_t
+nss_cmd_getpwnam_cache_updated(TALLOC_CTX *mem_ctx, struct tevent_req *req,
+                               dbus_uint16_t *err_maj, dbus_uint32_t *err_min,
+                               char **err_msg)
+{
+    return sss_dp_get_account_recv(mem_ctx, req, err_maj, err_min, err_msg);
+}
+
+static const char *
+nss_cmd_getpwnam_get_name(struct sss_domain_info *dom, void *pvt)
+{
+    struct getpwnam_search_ctx *ctx =
+        talloc_get_type(pvt, struct getpwnam_search_ctx);
+    return NSS_CASED_NAME(dom, ctx);
+}
+
+static void nss_cmd_getpwnam_done(struct tevent_req *subreq);
+
+static errno_t
+nss_cmd_getpwnam_search(struct nss_dom_ctx *dctx)
+{
+    struct tevent_req *req;
+    struct nss_ctx *nctx;
+    struct getpwnam_search_ctx *search_ctx;
+    static struct getent_ops getpwnam_ops = {
+        .check_ncache = nss_cmd_getpwnam_check_ncache,
+        .set_ncache = nss_cmd_getpwnam_set_ncache,
+        .check_sysdb = nss_cmd_getpwnam_check_cache,
+        .update_cache = nss_cmd_getpwnam_update_cache,
+        .cache_updated = nss_cmd_getpwnam_cache_updated,
+        .get_ent_name = nss_cmd_getpwnam_get_name
+    };
+
+    nctx = talloc_get_type(dctx->cmdctx->cctx->rctx->pvt_ctx, struct nss_ctx);
+
+    search_ctx = talloc_zero(dctx, struct getpwnam_search_ctx);
+    if (!search_ctx) {
+        return ENOMEM;
+    }
+    search_ctx->nctx = nctx;
+    search_ctx->cctx = dctx->cmdctx->cctx;
+    search_ctx->name = dctx->cmdctx->name;
+    search_ctx->cased_name = sss_get_cased_name(search_ctx, search_ctx->name,
+                                                false);
+    if (search_ctx->cased_name == NULL) {
+        talloc_free(search_ctx);
+        return ENOMEM;
+    }
+
+    req = getent_send(dctx, dctx->cmdctx->cctx->ev, dctx->cmdctx->cctx,
+                      dctx->cmdctx->cctx, nctx->cache_refresh_percent,
+                      &getpwnam_ops, "getpwnam", dctx);
+    if (!req) {
+        talloc_free(search_ctx);
+        return ENOMEM;
+    }
+    /* FIXME - what if the client disconnects at this point? A potential cache
+     * update must be allocated on rctx, so that it goes all the way, but will
+     * the callback be invoked?*/
+    tevent_req_set_callback(req, nss_cmd_getpwnam_done, dctx);
+    return EOK;
+}
+
+static void
+nss_cmd_getpwnam_done(struct tevent_req *req)
+{
+    errno_t ret, reqret;
+    int i;
+    struct nss_dom_ctx *dctx =
+            tevent_req_callback_data(req, struct nss_dom_ctx);
     struct nss_cmd_ctx *cmdctx = dctx->cmdctx;
     struct cli_ctx *cctx = cmdctx->cctx;
-    int ret;
+    struct nss_ctx *nctx =
+            talloc_get_type(cctx->rctx->pvt_ctx, struct nss_ctx);
 
-    if (err_maj) {
-        DEBUG(2, ("Unable to get information from Data Provider\n"
-                  "Error: %u, %u, %s\n"
-                  "Will try to return what we have in cache\n",
-                  (unsigned int)err_maj, (unsigned int)err_min, err_msg));
-
-        if (dctx->res && dctx->res->count == 1) {
-            ret = nss_cmd_getpw_send_reply(dctx, false);
-            goto done;
-        }
-
-        /* no previous results, just loop to next domain if possible */
-        if (dctx->domain->next && cmdctx->check_next) {
-            dctx->domain = dctx->domain->next;
-            dctx->check_provider = NEED_CHECK_PROVIDER(dctx->domain->provider);
-        } else {
-            /* nothing available */
-            ret = ENOENT;
-            goto done;
-        }
+    reqret = getent_recv(dctx, req, NULL, &dctx->res);
+    talloc_zfree(req);
+    if (reqret != EOK && reqret != ENOENT) {
+        DEBUG(SSSDBG_OP_FAILURE, ("getpwnam failed\n"));
+        nss_cmd_done(cmdctx, reqret);
+        return;
     }
 
-    /* ok the backend returned, search to see if we have updated results */
-    ret = nss_cmd_getpwnam_search(dctx);
+    /* FIXME - split out to provide nss_cmd_getpw_send_reply */
+    /* Either we succeeded or no domains were eligible */
+    ret = sss_packet_new(cmdctx->cctx->creq, 0,
+                         sss_packet_get_cmd(cmdctx->cctx->creq->in),
+                         &cmdctx->cctx->creq->out);
     if (ret == EOK) {
-        /* we have results to return */
-        ret = nss_cmd_getpw_send_reply(dctx, false);
+        if (reqret == ENOENT) {
+            /* Notify the caller that this entry wasn't found */
+            ret = sss_cmd_empty_packet(cmdctx->cctx->creq->out);
+        } else {
+            i = dctx->res->count;
+            ret = fill_pwent(cmdctx->cctx->creq->out,
+                    dctx->domain,
+                    nctx,
+                    false, true, /* getpwname sets filter to false, getpwuid to true */
+                    dctx->res->msgs,
+                    &i);
+        }
+        if (ret != EOK) {
+            DEBUG(SSSDBG_OP_FAILURE,
+                    ("Could not create response packet: [%s]\n",
+                     strerror(ret)));
+        }
+
+        sss_cmd_done(cmdctx->cctx, cmdctx);
+        return;
     }
 
-done:
-    ret = nss_cmd_done(cmdctx, ret);
-    if (ret) {
-        NSS_CMD_FATAL_ERROR(cctx);
-    }
+    DEBUG(SSSDBG_OP_FAILURE, ("Error creating packet\n"));
 }
 
 static void nss_cmd_getpwnam_cb(struct tevent_req *req);
@@ -844,9 +838,9 @@ static int nss_cmd_getpwnam(struct cli_ctx *cctx)
 
     /* ok, find it ! */
     ret = nss_cmd_getpwnam_search(dctx);
-    if (ret == EOK) {
-        /* we have results to return */
-        ret = nss_cmd_getpw_send_reply(dctx, false);
+    if (ret != EOK) {
+        DEBUG(SSSDBG_OP_FAILURE, ("Could not start search\n"));
+        goto done;
     }
 
 done:
@@ -896,8 +890,8 @@ static void nss_cmd_getpwnam_cb(struct tevent_req *req)
     /* ok, find it ! */
     ret = nss_cmd_getpwnam_search(dctx);
     if (ret == EOK) {
-        /* we have results to return */
-        ret = nss_cmd_getpw_send_reply(dctx, false);
+        DEBUG(SSSDBG_OP_FAILURE, ("Could not start search\n"));
+        goto done;
     }
 
 done:
