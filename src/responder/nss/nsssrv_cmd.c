@@ -584,7 +584,7 @@ static void nsssrv_dp_send_acct_req_done(struct tevent_req *req)
 }
 
 /* FIXME - does this obsolete dctx? */
-struct getpwnam_search_ctx {
+struct getbynam_search_ctx {
     struct nss_ctx *nctx;
     struct cli_ctx *cctx;
     const char *name;
@@ -594,8 +594,8 @@ struct getpwnam_search_ctx {
 static errno_t
 nss_cmd_getpwnam_check_ncache(struct sss_domain_info *dom, void *pvt)
 {
-    struct getpwnam_search_ctx *ctx =
-        talloc_get_type(pvt, struct getpwnam_search_ctx);
+    struct getbynam_search_ctx *ctx =
+        talloc_get_type(pvt, struct getbynam_search_ctx);
 
     return sss_ncache_check_user(ctx->nctx->ncache, ctx->nctx->neg_timeout,
                                  dom, ctx->name);
@@ -604,8 +604,8 @@ nss_cmd_getpwnam_check_ncache(struct sss_domain_info *dom, void *pvt)
 static errno_t
 nss_cmd_getpwnam_set_ncache(struct sss_domain_info *dom, void *pvt)
 {
-    struct getpwnam_search_ctx *ctx =
-        talloc_get_type(pvt, struct getpwnam_search_ctx);
+    struct getbynam_search_ctx *ctx =
+        talloc_get_type(pvt, struct getbynam_search_ctx);
 
     return sss_ncache_set_user(ctx->nctx->ncache, false, dom, ctx->name);
 }
@@ -615,8 +615,8 @@ nss_cmd_getpwnam_check_cache(TALLOC_CTX *mem_ctx, struct sysdb_ctx *sysdb,
                              struct sss_domain_info *dom, void *pvt,
                              struct ldb_result **res)
 {
-    struct getpwnam_search_ctx *ctx =
-        talloc_get_type(pvt, struct getpwnam_search_ctx);
+    struct getbynam_search_ctx *ctx =
+        talloc_get_type(pvt, struct getbynam_search_ctx);
 
     return sysdb_getpwnam(mem_ctx, sysdb, NSS_CASED_NAME(dom, ctx), res);
 }
@@ -624,8 +624,8 @@ nss_cmd_getpwnam_check_cache(TALLOC_CTX *mem_ctx, struct sysdb_ctx *sysdb,
 static struct tevent_req *
 nss_cmd_getpwnam_update_cache(struct sss_domain_info *dom, void *pvt)
 {
-    struct getpwnam_search_ctx *ctx =
-        talloc_get_type(pvt, struct getpwnam_search_ctx);
+    struct getbynam_search_ctx *ctx =
+        talloc_get_type(pvt, struct getbynam_search_ctx);
 
     return sss_dp_get_account_send(ctx->cctx, ctx->cctx->rctx,
                                    dom, true, SSS_DP_USER,
@@ -644,8 +644,8 @@ nss_cmd_getpwnam_cache_updated(TALLOC_CTX *mem_ctx, struct tevent_req *req,
 static const char *
 nss_cmd_getpwnam_get_name(struct sss_domain_info *dom, void *pvt)
 {
-    struct getpwnam_search_ctx *ctx =
-        talloc_get_type(pvt, struct getpwnam_search_ctx);
+    struct getbynam_search_ctx *ctx =
+        talloc_get_type(pvt, struct getbynam_search_ctx);
     return NSS_CASED_NAME(dom, ctx);
 }
 
@@ -656,7 +656,7 @@ nss_cmd_getpwnam_search(struct nss_dom_ctx *dctx)
 {
     struct tevent_req *req;
     struct nss_ctx *nctx;
-    struct getpwnam_search_ctx *search_ctx;
+    struct getbynam_search_ctx *search_ctx;
     static struct getent_ops getpwnam_ops = {
         .check_ncache = nss_cmd_getpwnam_check_ncache,
         .set_ncache = nss_cmd_getpwnam_set_ncache,
@@ -668,7 +668,7 @@ nss_cmd_getpwnam_search(struct nss_dom_ctx *dctx)
 
     nctx = talloc_get_type(dctx->cmdctx->cctx->rctx->pvt_ctx, struct nss_ctx);
 
-    search_ctx = talloc_zero(dctx, struct getpwnam_search_ctx);
+    search_ctx = talloc_zero(dctx, struct getbynam_search_ctx);
     if (!search_ctx) {
         return ENOMEM;
     }
@@ -2072,6 +2072,155 @@ static void nss_cmd_getgrnam_dp_callback(uint16_t err_maj, uint32_t err_min,
  *   EOK, if found
  *   anything else on a fatal error
  */
+
+static errno_t
+nss_cmd_getgrnam_check_ncache(struct sss_domain_info *dom, void *pvt)
+{
+    struct getbynam_search_ctx *ctx =
+        talloc_get_type(pvt, struct getbynam_search_ctx);
+
+    return sss_ncache_check_group(ctx->nctx->ncache, ctx->nctx->neg_timeout,
+                                  dom, ctx->name);
+}
+
+static errno_t
+nss_cmd_getgrnam_set_ncache(struct sss_domain_info *dom, void *pvt)
+{
+    struct getbynam_search_ctx *ctx =
+        talloc_get_type(pvt, struct getbynam_search_ctx);
+
+    return sss_ncache_set_group(ctx->nctx->ncache, false, dom, ctx->name);
+}
+
+static errno_t
+nss_cmd_getgrnam_check_cache(TALLOC_CTX *mem_ctx, struct sysdb_ctx *sysdb,
+                             struct sss_domain_info *dom, void *pvt,
+                             struct ldb_result **res)
+{
+    struct getbynam_search_ctx *ctx =
+        talloc_get_type(pvt, struct getbynam_search_ctx);
+
+    return sysdb_getgrnam(mem_ctx, sysdb, NSS_CASED_NAME(dom, ctx), res);
+}
+
+static struct tevent_req *
+nss_cmd_getgrnam_update_cache(struct sss_domain_info *dom, void *pvt)
+{
+    struct getbynam_search_ctx *ctx =
+        talloc_get_type(pvt, struct getbynam_search_ctx);
+
+    return sss_dp_get_account_send(ctx->cctx, ctx->cctx->rctx,
+                                   dom, true, SSS_DP_GROUP,
+                                   NSS_CASED_NAME(dom, ctx),
+                                   0, NULL);
+}
+
+static errno_t
+nss_cmd_getgrnam_cache_updated(TALLOC_CTX *mem_ctx, struct tevent_req *req,
+                               dbus_uint16_t *err_maj, dbus_uint32_t *err_min,
+                               char **err_msg)
+{
+    return sss_dp_get_account_recv(mem_ctx, req, err_maj, err_min, err_msg);
+}
+
+static void nss_cmd_getpwnam_done(struct tevent_req *subreq);
+
+static errno_t
+nss_cmd_getgrnam_search(struct nss_dom_ctx *dctx)
+{
+    struct tevent_req *req;
+    struct nss_ctx *nctx;
+    struct getbynam_search_ctx *search_ctx;
+    static struct getent_ops getgrnam_ops = {
+        .check_ncache = nss_cmd_getgrnam_check_ncache,
+        .set_ncache = nss_cmd_getgrnam_set_ncache,
+        .check_sysdb = nss_cmd_getgrnam_check_cache,
+        .update_cache = nss_cmd_getgrnam_update_cache,
+        .cache_updated = nss_cmd_getgrnam_cache_updated,
+        .get_ent_name = nss_cmd_getgrnam_get_name
+    };
+
+    nctx = talloc_get_type(dctx->cmdctx->cctx->rctx->pvt_ctx, struct nss_ctx);
+
+    /* FIXME - common fc between pw and gr */
+    search_ctx = talloc_zero(dctx, struct getbynam_search_ctx);
+    if (!search_ctx) {
+        return ENOMEM;
+    }
+    search_ctx->nctx = nctx;
+    search_ctx->cctx = dctx->cmdctx->cctx;
+    search_ctx->name = dctx->cmdctx->name;
+    search_ctx->cased_name = sss_get_cased_name(search_ctx, search_ctx->name,
+                                                false);
+    if (search_ctx->cased_name == NULL) {
+        talloc_free(search_ctx);
+        return ENOMEM;
+    }
+
+    req = getent_send(dctx, dctx->cmdctx->cctx->ev, dctx->cmdctx->cctx,
+                      dctx->cmdctx->cctx, nctx->cache_refresh_percent,
+                      &getgrnam_ops, "getgrnam", dctx);
+    if (!req) {
+        talloc_free(search_ctx);
+        return ENOMEM;
+    }
+    /* FIXME - what if the client disconnects at this point? A potential cache
+     * update must be allocated on rctx, so that it goes all the way, but will
+     * the callback be invoked?*/
+    tevent_req_set_callback(req, nss_cmd_getgrnam_done, dctx);
+    return EOK;
+}
+
+static void
+nss_cmd_getgrnam_done(struct tevent_req *req)
+{
+    errno_t ret, reqret;
+    int i;
+    struct nss_dom_ctx *dctx =
+            tevent_req_callback_data(req, struct nss_dom_ctx);
+    struct nss_cmd_ctx *cmdctx = dctx->cmdctx;
+    struct cli_ctx *cctx = cmdctx->cctx;
+    struct nss_ctx *nctx =
+            talloc_get_type(cctx->rctx->pvt_ctx, struct nss_ctx);
+
+    reqret = getent_recv(dctx, req, NULL, &dctx->res);
+    talloc_zfree(req);
+    if (reqret != EOK && reqret != ENOENT) {
+        DEBUG(SSSDBG_OP_FAILURE, ("getgrnam failed\n"));
+        nss_cmd_done(cmdctx, reqret);
+        return;
+    }
+
+    /* FIXME - split out to provide nss_cmd_getgr_send_reply */
+    /* Either we succeeded or no domains were eligible */
+    ret = sss_packet_new(cmdctx->cctx->creq, 0,
+                         sss_packet_get_cmd(cmdctx->cctx->creq->in),
+                         &cmdctx->cctx->creq->out);
+    if (ret == EOK) {
+        if (reqret == ENOENT) {
+            /* Notify the caller that this entry wasn't found */
+            ret = sss_cmd_empty_packet(cmdctx->cctx->creq->out);
+        } else {
+            i = dctx->res->count;
+            ret = fill_grent(cmdctx->cctx->creq->out,
+                    dctx->domain,
+                    nctx,
+                    false, true, /* getgrnam sets filter to false, getgrgid to true */
+                    dctx->res->msgs,
+                    &i);
+        }
+        if (ret != EOK) {
+            DEBUG(SSSDBG_OP_FAILURE,
+                    ("Could not create response packet: [%s]\n",
+                     strerror(ret)));
+        }
+
+        sss_cmd_done(cmdctx->cctx, cmdctx);
+        return;
+    }
+
+    DEBUG(SSSDBG_OP_FAILURE, ("Error creating packet\n"));
+}
 
 static int nss_cmd_getgrnam_search(struct nss_dom_ctx *dctx)
 {
