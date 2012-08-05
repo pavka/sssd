@@ -362,7 +362,7 @@ static errno_t write_selinux_string(const char *username, char *string)
     char *tmp_path = NULL;
     ssize_t written;
     int len;
-    int fd = 0;
+    int fd = -1;
     mode_t oldmask;
     TALLOC_CTX *tmp_ctx;
     char *full_string = NULL;
@@ -433,9 +433,10 @@ static errno_t write_selinux_string(const char *username, char *string)
     } else {
         ret = EOK;
     }
+    fd = -1;
 
 done:
-    if (fd > 0) {
+    if (fd != -1) {
         close(fd);
         if (unlink(tmp_path) < 0) {
             DEBUG(SSSDBG_MINOR_FAILURE, ("Could not remove file [%s]",
