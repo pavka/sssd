@@ -535,6 +535,9 @@ static struct tevent_req *sdap_sudo_full_refresh_send(TALLOC_CTX *mem_ctx,
     state->id_ctx = id_ctx;
     state->sysdb = id_ctx->be->sysdb;
 
+    ret = EOK;
+    goto immediately;
+
     /* Download all rules from LDAP */
     ldap_filter = talloc_asprintf(state, SDAP_SUDO_FILTER_CLASS,
                                   id_ctx->opts->sudorule_map[SDAP_OC_SUDORULE].name);
@@ -1071,6 +1074,7 @@ static int sdap_sudo_schedule_full_refresh(struct sdap_sudo_ctx *sudo_ctx,
 {
     struct tevent_req *req = NULL;
     struct timeval tv;
+    return EOK;
 
     /* schedule new refresh */
     tv = tevent_timeval_current_ofs(delay, 0);

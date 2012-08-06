@@ -78,7 +78,7 @@ static int be_fo_get_options(struct be_ctx *ctx,
     }
 
     opts->retry_timeout = 30;
-    opts->srv_retry_timeout = 14400;
+    opts->srv_retry_timeout = 5;
 
     ret = resolv_get_family_order(ctx->cdb, ctx->conf_path,
                                   &opts->family_order);

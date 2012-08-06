@@ -1741,6 +1741,7 @@ int sdap_cli_connect_recv(struct tevent_req *req,
         }
         return EIO;
     } else if (state->srv) {
+        DEBUG(0, ("CRASH POINT\n"));
         be_fo_set_port_status(state->be, state->srv, PORT_WORKING);
     }
 

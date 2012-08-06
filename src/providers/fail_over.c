@@ -275,10 +275,12 @@ get_srv_data_status(struct srv_data *data)
         case SRV_NEUTRAL:
             break;
         case SRV_RESOLVED:
+            DEBUG(0, ("The SRV query is expired\n"));
             data->srv_lookup_status = SRV_EXPIRED;
             data->last_status_change.tv_sec = 0;
             break;
         case SRV_RESOLVE_ERROR:
+            DEBUG(0, ("Marking SRV query as neutral\n"));
             data->srv_lookup_status = SRV_NEUTRAL;
             data->last_status_change.tv_sec = 0;
             break;
@@ -515,7 +517,7 @@ fo_add_srv_server(struct fo_service *service, const char *srv,
 {
     struct fo_server *server;
 
-    DEBUG(SSSDBG_TRACE_FUNC, ("Adding new SRV server in domain '%s', to service '%s' using %s\n",
+    DEBUG(0, ("Adding new SRV server in domain '%s', to service '%s' using %s\n",
                               discovery_domain ? discovery_domain : "unknown",
                               service->name, proto));
 
@@ -677,9 +679,11 @@ get_first_server_entity(struct fo_service *service, struct fo_server **_server)
     /* If we already have a working server, use that one. */
     server = service->active_server;
     if (server != NULL) {
+#if 0
         if (service_works(server) && fo_is_server_primary(server)) {
             goto done;
         }
+#endif
         service->active_server = NULL;
     }
 
@@ -805,7 +809,7 @@ fo_resolve_service_send(TALLOC_CTX *mem_ctx, struct tevent_context *ev,
     struct tevent_req *subreq;
     struct resolve_service_state *state;
 
-    DEBUG(4, ("Trying to resolve service '%s'\n", service->name));
+    DEBUG(0, ("Trying to resolve service '%s'\n", service->name));
     req = tevent_req_create(mem_ctx, &state, struct resolve_service_state);
     if (req == NULL)
         return NULL;
