@@ -979,19 +979,29 @@ errno_t sss_strnlen(const char *str, size_t maxlen, size_t *len)
 static pthread_mutex_t sss_nss_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t sss_pam_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-void sss_nss_lock(void)
+void sss_nss_cleanup(void *pvt)
+{
+    sss_cli_close_socket();
+    _sss_nss_unlock();
+}
+void _sss_nss_lock(void)
 {
     pthread_mutex_lock(&sss_nss_mutex);
 }
-void sss_nss_unlock(void)
+void _sss_nss_unlock(void)
 {
     pthread_mutex_unlock(&sss_nss_mutex);
 }
-void sss_pam_lock(void)
+void sss_pam_cleanup(void *pvt)
+{
+    sss_cli_close_socket();
+    _sss_pam_unlock();
+}
+void _sss_pam_lock(void)
 {
     pthread_mutex_lock(&sss_pam_mutex);
 }
-void sss_pam_unlock(void)
+void _sss_pam_unlock(void)
 {
     pthread_mutex_unlock(&sss_pam_mutex);
 }
@@ -999,10 +1009,10 @@ void sss_pam_unlock(void)
 #else
 
 /* sorry no mutexes available */
-void sss_nss_lock(void) { return; }
-void sss_nss_unlock(void) { return; }
-void sss_pam_lock(void) { return; }
-void sss_pam_unlock(void) { return; }
+void _sss_nss_lock(void) { return; }
+void _sss_nss_unlock(void) { return; }
+void _sss_pam_lock(void) { return; }
+void _sss_pam_unlock(void) { return; }
 #endif
 
 

@@ -32,11 +32,15 @@
 #include <stdint.h>
 #include <limits.h>
 
+#include "config.h"
+#if HAVE_PTHREAD
+#include <pthread.h>
+#endif
+
 #ifndef HAVE_ERRNO_T
 #define HAVE_ERRNO_T
 typedef int errno_t;
 #endif
-
 
 #ifndef EOK
 #define EOK 0
@@ -563,10 +567,50 @@ safealign_memcpy(void *dest, const void *src, size_t n, size_t *counter)
  */
 errno_t sss_strnlen(const char *str, size_t maxlen, size_t *len);
 
-void sss_nss_lock(void);
-void sss_nss_unlock(void);
-void sss_pam_lock(void);
-void sss_pam_unlock(void);
+void _sss_nss_lock(void);
+void _sss_nss_unlock(void);
+void _sss_pam_lock(void);
+void _sss_pam_unlock(void);
+
+void sss_nss_cleanup(void *pvt);
+void sss_pam_cleanup(void *pvt);
+
+/*
+ * pthread_cleanup_push is a macro that must be used
+ * on the same indentation level as pthread_cleanup_pop
+ * so we can't wrap it in a do-while(0) loop
+ */
+#if HAVE_PTHREAD
+#define sss_nss_lock()                              \
+    pthread_cleanup_push(sss_nss_cleanup, NULL);    \
+    _sss_nss_lock()
+#else
+#define sss_nss_lock() _sss_nss_lock()
+#endif
+
+#if HAVE_PTHREAD
+#define sss_nss_unlock()                    \
+    pthread_cleanup_pop(0);                 \
+    _sss_nss_unlock()
+#else
+#define sss_nss_cleanup_unlock() _sss_nss_unlock()
+#endif
+
+#if HAVE_PTHREAD
+#define sss_pam_lock()                              \
+    pthread_cleanup_push(sss_pam_cleanup, NULL);    \
+    _sss_pam_lock()
+#else
+#define sss_pam_lock() _sss_pam_lock()
+#endif
+
+#if HAVE_PTHREAD
+#define sss_pam_unlock()                    \
+    pthread_cleanup_pop(0);                 \
+    _sss_pam_unlock()
+#else
+#define sss_pam_cleanup_unlock() _sss_pam_unlock()
+#endif
 
 errno_t sss_readrep_copy_string(const char *in,
                                 size_t *offset,
