@@ -979,7 +979,6 @@ errno_t sss_strnlen(const char *str, size_t maxlen, size_t *len)
 typedef void (*sss_mutex_init)(void);
 
 struct sss_mutex {
-    pthread_mutexattr_t attr;
     pthread_mutex_t mtx;
 
     pthread_once_t once;
@@ -1000,21 +999,24 @@ static struct sss_mutex pam_mtx = { .mtx  = PTHREAD_MUTEX_INITIALIZER,
 /* Generic mutex init, lock, unlock functions */
 void sss_mt_init(struct sss_mutex *m)
 {
-    if (pthread_mutexattr_init(&m->attr) != 0) {
+    pthread_mutexattr_t attr;
+
+    if (pthread_mutexattr_init(&attr) != 0) {
         return;
     }
-    if (pthread_mutexattr_setrobust(&m->attr, PTHREAD_MUTEX_ROBUST) != 0) {
+    if (pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST) != 0) {
         return;
     }
-    if (pthread_mutex_init(&m->mtx, &m->attr) != 0) {
-        return;
-    }
+
+    pthread_mutex_init(&m->mtx, &attr);
+    pthread_mutexattr_destroy(&attr);
 }
 
 void sss_mt_lock(struct sss_mutex *m)
 {
     pthread_once(&m->once, m->init);
     if (pthread_mutex_lock(&m->mtx) == EOWNERDEAD) {
+        sss_cli_close_socket();
         pthread_mutex_consistent(&m->mtx);
     }
 }
