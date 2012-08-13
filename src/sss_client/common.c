@@ -976,24 +976,80 @@ errno_t sss_strnlen(const char *str, size_t maxlen, size_t *len)
 }
 
 #if HAVE_PTHREAD
-static pthread_mutex_t sss_nss_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t sss_pam_mutex = PTHREAD_MUTEX_INITIALIZER;
+typedef void (*sss_mutex_init)(void);
 
+struct sss_mutex {
+    pthread_mutexattr_t attr;
+    pthread_mutex_t mtx;
+
+    pthread_once_t once;
+    sss_mutex_init init;
+};
+
+static void sss_nss_mt_init(void);
+static void sss_pam_mt_init(void);
+
+static struct sss_mutex nss_mtx = { .mtx  = PTHREAD_MUTEX_INITIALIZER,
+                                    .once = PTHREAD_ONCE_INIT,
+                                    .init = sss_nss_mt_init };
+
+static struct sss_mutex pam_mtx = { .mtx  = PTHREAD_MUTEX_INITIALIZER,
+                                    .once = PTHREAD_ONCE_INIT,
+                                    .init = sss_pam_mt_init };
+
+/* Generic mutex init, lock, unlock functions */
+void sss_mt_init(struct sss_mutex *m)
+{
+    if (pthread_mutexattr_init(&m->attr) != 0) {
+        return;
+    }
+    if (pthread_mutexattr_setrobust(&m->attr, PTHREAD_MUTEX_ROBUST) != 0) {
+        return;
+    }
+    if (pthread_mutex_init(&m->mtx, &m->attr) != 0) {
+        return;
+    }
+}
+
+void sss_mt_lock(struct sss_mutex *m)
+{
+    pthread_once(&m->once, m->init);
+    if (pthread_mutex_lock(&m->mtx) == EOWNERDEAD) {
+        pthread_mutex_consistent(&m->mtx);
+    }
+}
+
+void sss_mt_unlock(struct sss_mutex *m)
+{
+    pthread_mutex_unlock(&m->mtx);
+}
+
+/* NSS mutex wrappers */
+static void sss_nss_mt_init(void)
+{
+    sss_mt_init(&nss_mtx);
+}
 void sss_nss_lock(void)
 {
-    pthread_mutex_lock(&sss_nss_mutex);
+    sss_mt_lock(&nss_mtx);
 }
 void sss_nss_unlock(void)
 {
-    pthread_mutex_unlock(&sss_nss_mutex);
+    sss_mt_unlock(&nss_mtx);
+}
+
+/* NSS mutex wrappers */
+static void sss_pam_mt_init(void)
+{
+    sss_mt_init(&pam_mtx);
 }
 void sss_pam_lock(void)
 {
-    pthread_mutex_lock(&sss_pam_mutex);
+    sss_mt_lock(&pam_mtx);
 }
 void sss_pam_unlock(void)
 {
-    pthread_mutex_unlock(&sss_pam_mutex);
+    sss_mt_unlock(&pam_mtx);
 }
 
 #else
